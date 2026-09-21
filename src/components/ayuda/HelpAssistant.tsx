@@ -10,6 +10,120 @@ function normalize(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+function Inline({ text }: { text: string }) {
+  const re = /(\*\*.*?\*\*|`[^`]+`)/g;
+  const parts = text.split(re);
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p.startsWith("**") && p.endsWith("**") && p.length > 4) {
+          return (
+            <strong key={i} className="font-semibold text-on-surface">
+              {p.slice(2, -2)}
+            </strong>
+          );
+        }
+        if (p.startsWith("`") && p.endsWith("`") && p.length > 2) {
+          return (
+            <code key={i} className="rounded bg-surface-variant px-1 py-0.5 font-mono text-[12px] text-on-surface">
+              {p.slice(1, -1)}
+            </code>
+          );
+        }
+        return <span key={i}>{p}</span>;
+      })}
+    </>
+  );
+}
+
+function HelpMarkdown({ text }: { text: string }) {
+  // Separa bloques ```code```
+  const fenceParts = text.split(/```/);
+  return (
+    <div className="flex flex-col gap-2">
+      {fenceParts.map((part, idx) => {
+        if (idx % 2 === 1) {
+          // bloque de código
+          const lines = part.split("\n");
+          // quita primera línea si es lenguaje (json, etc)
+          const first = lines[0]?.trim().toLowerCase();
+          const isLang = ["json", "bash", "js", "ts"].includes(first);
+          const code = isLang ? lines.slice(1).join("\n").trim() : part.trim();
+          return (
+            <pre key={idx} className="overflow-x-auto rounded bg-surface-variant p-2 font-mono text-[11px] leading-4 text-on-surface">
+              <code>{code}</code>
+            </pre>
+          );
+        }
+        // texto normal: agrupar listas y párrafos
+        const lines = part.split("\n");
+        const blocks: React.ReactNode[] = [];
+        let listItems: string[] = [];
+        let listType: "ol" | "ul" | null = null;
+        const flushList = () => {
+          if (listItems.length === 0 || !listType) return;
+          const items = [...listItems];
+          const t = listType;
+          listItems = [];
+          listType = null;
+          blocks.push(
+            t === "ol" ? (
+              <ol key={blocks.length} className="list-decimal space-y-1 pl-5">
+                {items.map((it, j) => (
+                  <li key={j} className="font-body-md text-body-md text-on-surface">
+                    <Inline text={it} />
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <ul key={blocks.length} className="list-disc space-y-1 pl-5">
+                {items.map((it, j) => (
+                  <li key={j} className="font-body-md text-body-md text-on-surface">
+                    <Inline text={it} />
+                  </li>
+                ))}
+              </ul>
+            ),
+          );
+        };
+        lines.forEach((raw) => {
+          const line = raw.trim();
+          if (!line) {
+            flushList();
+            return;
+          }
+          const ol = line.match(/^\d+\.\s+(.*)/);
+          if (ol) {
+            if (listType !== "ol") {
+              flushList();
+              listType = "ol";
+            }
+            listItems.push(ol[1]);
+            return;
+          }
+          const ul = line.match(/^[-•]\s+(.*)/);
+          if (ul) {
+            if (listType !== "ul") {
+              flushList();
+              listType = "ul";
+            }
+            listItems.push(ul[1]);
+            return;
+          }
+          flushList();
+          blocks.push(
+            <p key={blocks.length} className="font-body-md text-body-md leading-5 text-on-surface">
+              <Inline text={line} />
+            </p>,
+          );
+        });
+        flushList();
+        return <div key={idx} className="flex flex-col gap-2">{blocks}</div>;
+      })}
+    </div>
+  );
+}
+
 export default function HelpAssistant() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -113,7 +227,9 @@ export default function HelpAssistant() {
           {msgs.map((m) => (
             <div key={m.id} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
               <div className={m.role === "user" ? "max-w-[84%] rounded-2xl bg-primary px-3 py-2 font-body-md text-body-md text-on-primary" : "max-w-[92%] rounded-2xl border border-outline-variant/50 bg-surface-container-low px-3 py-2 font-body-md text-body-md text-on-surface"}>
-                <span className="whitespace-pre-wrap break-words">{m.text}</span>
+                <span className="break-words">
+                  {m.role === "user" ? m.text : <Inline text={m.text} />}
+                </span>
                 {m.entries && m.entries.length > 0 && (
                   <div className="mt-2 flex flex-col gap-1">
                     {m.entries.map((e) => (
@@ -133,7 +249,9 @@ export default function HelpAssistant() {
           <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
             <p className="font-class-name text-class-name font-bold text-on-surface">{selected.titulo}</p>
             <p className="mt-1 font-code-sm text-[11px] text-on-surface-variant">{selected.pregunta}</p>
-            <p className="mt-2 whitespace-pre-wrap break-words font-body-md text-body-md text-on-surface">{selected.respuesta}</p>
+            <div className="mt-2">
+              <HelpMarkdown text={selected.respuesta} />
+            </div>
             <div className="mt-2 flex flex-wrap gap-1">
               {selected.keywords.slice(0, 5).map((k) => (
                 <span key={k} className="rounded bg-surface px-1.5 py-0.5 font-code-sm text-[10px] text-on-surface-variant">

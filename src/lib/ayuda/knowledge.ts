@@ -95,7 +95,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
     id: "problemas-backend",
     titulo: "Problemas al arrancar backend",
     pregunta: "El backend no arranca, ¿qué hago?",
-    respuesta: "| Síntoma | Solución |\n|---|---| \n| `No se encontró Java` | Instala JDK 17+ desde adoptium.net |\n| Descarga de Maven falla | Conecta internet la primera vez |\n| `Puerto 8080 en uso` | Cierra la otra app o `Get-Process java | Stop-Process` |\n| `address already in use :11434` (Ollama) | Normal: ya está corriendo, usa `ollama list` |\n| `adb reverse` no conecta | Ejecuta `adb reverse tcp:8080 tcp:8080` con el celular por USB |",
+    respuesta: "• **No se encontró Java** → Instala JDK 17+ desde adoptium.net\n• **Descarga de Maven falla** → Conecta internet la primera vez\n• **Puerto 8080 en uso** → Cierra la otra app o ejecuta `Get-Process java | Stop-Process`\n• **address already in use :11434** (Ollama) → Normal: ya está corriendo, usa `ollama list`\n• **adb reverse no conecta** → Ejecuta `adb reverse tcp:8080 tcp:8080` con el celular por USB",
     keywords: ["error", "falla", "puerto", "java", "maven", "8080", "11434", "adb"],
     atajos: ["error 8080", "no arranca"],
   },
