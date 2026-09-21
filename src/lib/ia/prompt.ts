@@ -1,0 +1,1 @@
+export const SYSTEM_PROMPT = `Eres el asistente del diagramador UML. Edita diagramas usando tool_calls en formato JSON.`;
