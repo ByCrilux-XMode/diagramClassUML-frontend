@@ -12,6 +12,7 @@ import {
   enumJava,
   interfaceJava,
   repositoryJava,
+  schemaControllerJava,
   serviceJava,
 } from "./generators";
 import { postmanCollectionJson } from "./postmanGenerator";
@@ -96,6 +97,9 @@ export async function exportarSpringBootZip(
     zip.file(`${base}/service/${e.className}Service.java`, serviceJava(pkg, e, pkType, model.entities));
     zip.file(`${base}/controller/${e.className}Controller.java`, controllerJava(pkg, e, pkType, model.entities));
   }
+
+  // Endpoint genérico para app móvil / agente IA: GET /api/schema
+  zip.file(`${base}/controller/SchemaController.java`, schemaControllerJava(pkg, model.entities, model.enums));
 
   zip.file(`${artifactId}/postman_collection.json`, postmanCollectionJson(model));
 

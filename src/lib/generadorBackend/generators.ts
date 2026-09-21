@@ -284,6 +284,53 @@ function pkNameOf(allEntities: EntityModel[], entityKey: string): string {
   return "id";
 }
 
+// ---------------- SCHEMA CONTROLLER (/api/schema) ----------------
+
+export function schemaControllerJava(pkg: string, entities: EntityModel[], enums: EnumModel[]): string {
+  const enumMap = enums.length
+    ? enums.map((en) => `"${en.className}": [${en.literals.map((l) => `"${l}"`).join(", ")}]`).join(", ")
+    : "";
+  const enumJson = enums.length ? `"enums": {${enumMap}}` : `"enums": {}`;
+
+  const entidadesJson = entities
+    .map((e) => {
+      const endpoint = `/api/${toResourcePlural(e.className)}`;
+      const pkName = e.pk?.javaName ?? "id";
+      const pkType = e.pk?.javaType ?? "Long";
+      const campos = e.scalars
+        .map((s) => `{"campo": "${s.javaName}", "tipo": "${s.javaType}"}`)
+        .join(", ");
+      const relaciones = e.relations
+        .map((r) => `{"campo": "${r.javaName}", "entidad": "${r.targetClassName}", "fk": "${r.columnName}"}`)
+        .join(", ");
+      return `{"entidad": "${e.className}", "endpoint": "${endpoint}", "pk": "${pkName}", "tipo_pk": "${pkType}", "campos": [${campos}], "relaciones": [${relaciones}]}`;
+    })
+    .join(", ");
+
+  const fullJson = `{"version": 1, ${enumJson}, "entidades": [${entidadesJson}]}`;
+  // Escapar para Java string literal
+  const escaped = fullJson.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+  return `package ${pkg}.controller;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.CrossOrigin;
+
+@RestController
+@CrossOrigin(origins = "*")
+public class SchemaController {
+
+    private static final String SCHEMA_JSON = "${escaped}";
+
+    @GetMapping(value = "/api/schema", produces = "application/json")
+    public String schema() {
+        return SCHEMA_JSON;
+    }
+}
+`;
+}
+
 // ---------------- CONTROLLER ----------------
 
 export function controllerJava(

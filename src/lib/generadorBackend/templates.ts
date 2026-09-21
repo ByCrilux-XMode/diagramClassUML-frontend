@@ -136,6 +136,23 @@ http://localhost:8080/h2-console — JDBC URL \`jdbc:h2:mem:testdb\`, usuario \`
 ## Endpoints generados
 
 ${list || "(sin entidades)"}
+- \`GET /api/schema\` — esquema genérico para app móvil / agente IA (entidades, campos, relaciones, enums)
+
+## Esquema para app móvil (offline + IA)
+
+\`GET http://127.0.0.1:8080/api/schema\` devuelve JSON con todas las entidades:
+
+\`\`\`json
+{"version":1,"enums":{"Estado":["ACTIVO","INACTIVO"]},"entidades":[
+  {"entidad":"Mascota","endpoint":"/api/mascotas","pk":"id","tipo_pk":"Long",
+   "campos":[{"campo":"nombre","tipo":"String"}],
+   "relaciones":[{"campo":"dueno","entidad":"Duenio","fk":"dueno_id"}]}
+]}
+\`\`\`
+
+La app Flutter lo usa para construir formularios dinámicos y generar las tools del modelo local (ministral-3:3b en Termux via Ollama en \`http://127.0.0.1:11434\`).
+
+Conexión por USB: \`adb reverse tcp:8080 tcp:8080\` y la app ataca \`http://127.0.0.1:8080\`.
 
 ## Si algo falla
 

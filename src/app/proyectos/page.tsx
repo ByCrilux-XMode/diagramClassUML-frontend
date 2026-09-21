@@ -13,6 +13,7 @@ import ProjectCard, {
   type ProjectCardData,
 } from "@/components/dashboard/ProjectCard";
 import ViewDetailsModal from "@/components/projects/ViewDetailsModal";
+import HelpAssistant from "@/components/ayuda/HelpAssistant";
 import { eliminarProyecto, listarMisProyectos } from "@/lib/proyectos";
 import type { ProyectoResumen, RolProyecto } from "@/types/proyecto";
 import { useAuth } from "@/hooks/useAuth";
@@ -287,6 +288,7 @@ export default function ProyectosDashboard() {
           </p>
         </div>
       )}
+      <HelpAssistant />
     </>
   );
 }
