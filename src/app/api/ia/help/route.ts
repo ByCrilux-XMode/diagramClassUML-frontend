@@ -51,25 +51,35 @@ export async function POST(request: NextRequest) {
   };
   const userMessages = (messages as IAChatMessage[]).slice(-8);
 
-  try {
-    const result = await getAdapter("openrouter").chat({
-      provider: "openrouter",
-      model: IA_HELP_MODEL,
-      messages: [system, ...userMessages],
-      tools: [],
-    });
-    const parsed = parseHelpJson(result.content);
-    return Response.json({
-      ...parsed,
-      model: result.model,
-      keyFallbacksUsed: result.keyFallbacksUsed ?? 0,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[api/ia/help]", message);
-    return Response.json(
-      { error: message || "El asistente online no está disponible." },
-      { status: 502 }
-    );
+  // Fallback por modelo: prueba tus 3 de .env en orden si uno es agentic-only (403) o 401
+  const { OPENROUTER_MODELS } = await import("@/lib/ia/config");
+  const candidates = OPENROUTER_MODELS.length > 0 ? OPENROUTER_MODELS : [IA_HELP_MODEL].filter(Boolean);
+  let lastErr: unknown = null;
+  for (const m of candidates) {
+    try {
+      const result = await getAdapter("openrouter").chat({
+        provider: "openrouter",
+        model: m,
+        messages: [system, ...userMessages],
+        tools: [],
+      });
+      const parsed = parseHelpJson(result.content);
+      return Response.json({
+        ...parsed,
+        model: result.model,
+        keyFallbacksUsed: result.keyFallbacksUsed ?? 0,
+      });
+    } catch (err: unknown) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/not a valid model ID|401|403|429|Missing Authentication|agentic harnesses/i.test(msg)) {
+        console.error("[api/ia/help]", msg);
+        return Response.json({ error: msg || "El asistente online no está disponible." }, { status: 502 });
+      }
+      // 403 agentic-only -> prueba siguiente modelo
+    }
   }
+  const message = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "El asistente online no está disponible.");
+  console.error("[api/ia/help]", message);
+  return Response.json({ error: message }, { status: 502 });
 }
