@@ -152,6 +152,19 @@ ${list || "(sin entidades)"}
 
 La app Flutter lo usa para construir formularios dinámicos y generar las tools del modelo local (ministral-3:3b en Termux via Ollama en \`http://127.0.0.1:11434\`).
 
+## Conexión móvil — Hotspot con segundo celular (recomendado con datos lentos)
+
+El backend escucha en todas las interfaces. No necesita internet para la app:
+
+1. Celular 2 → Hotspot ON → conecta laptop y Celular 1 al mismo WiFi del hotspot.
+2. Laptop: ipconfig (Windows) o ifconfig (Linux/Mac) → anota IPv4 192.168.43.x (hotspot típico 192.168.43.x / 192.168.137.x).
+3. Celular 1 → ex1-movil → Ajustes: pulsa Descubrir backend (mDNS + escaneo de 192.168.43.0/24 buscando /api/schema) o Escanear QR si la laptop muestra el QR. Si no encuentra, pega manual http://<IP>:8080 → Guardar → Probar backend.
+4. Verifica en el celular: http://<IP>:8080/api/schema y http://<IP>:8080/swagger-ui.html
+5. Si prefieres no tipear: en la laptop abre https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=http://<IP>:8080 y escanea con Escanear QR.
+
+> Fallback USB: \`adb reverse tcp:8080 tcp:8080\` → \`http://127.0.0.1:8080\` (si el hotspot falla).
+> El LLM del celular sigue en \`http://127.0.0.1:11434\` (interno, no usa hotspot).
+
 Conexión por USB: \`adb reverse tcp:8080 tcp:8080\` y la app ataca \`http://127.0.0.1:8080\`.
 
 ## Si algo falla
@@ -273,6 +286,10 @@ export function iniciarBat(): string {
     "echo ===============================================",
     "echo  Backend Spring Boot (generado desde UML)",
     "echo ===============================================",
+    "echo.",
+    "echo [TIP] Para hotspot: conecta laptop y celular al mismo WiFi del Celular 2,",
+    "echo luego en otra ventana ejecuta: ipconfig ^| findstr IPv4",
+    "echo y en el celular pega http://^<IP^>:8080/api/schema",
     "echo.",
     "where java >nul 2>nul",
     "if errorlevel 1 goto :nojava",

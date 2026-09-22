@@ -26,8 +26,10 @@ import { runAgentLoop } from "@/lib/ia/agentLoop";
 import { runVisionImport, VISION_DEFAULT_MODEL } from "@/lib/ia/visionAgentLoop";
 import { SYSTEM_PROMPT } from "@/lib/ia/prompt";
 import {
+  HF_USE_ROUTER,
   IA_DEFAULT_MODEL,
   IA_DEFAULT_PROVIDER,
+  IA_VISION_HF_MODEL,
   IA_VISION_PROVIDER,
   OPENROUTER_DEFAULT_MODEL,
   OPENROUTER_MODELS,
@@ -280,25 +282,35 @@ export default function CreateProjectModal({
         const validModels = candidates.filter((m) => !isOllamaId(m));
         const toTry = validModels.length > 0 ? validModels : candidates;
         let lastErr: unknown = null;
-        for (const m of toTry) {
+        // Cola de fallback: primero el túnel que ya falló arriba, y acá se prueba
+        // HF VL (router, gratis, acepta imagen) y después los OpenRouter de .env.
+        const isImage = Boolean(aiImageBase64);
+        interface Candidate {
+          provider: "huggingface" | "openrouter";
+          model: string;
+        }
+        const list: Candidate[] = [];
+        if (isImage && HF_USE_ROUTER) list.push({ provider: "huggingface", model: IA_VISION_HF_MODEL });
+        for (const m of toTry) list.push({ provider: "openrouter" as const, model: m });
+        for (const c of list) {
           try {
-            setAiTrace(`Túnel no responde, probando OpenRouter con ${m}...`);
-            const r = aiImageBase64
+            setAiTrace(`Túnel no responde, probando ${c.provider} con ${c.model}...`);
+            const r = isImage
               ? await runVisionImport({
-                  provider: "openrouter" as const,
-                  model: m,
-                  images: [aiImageBase64],
+                  provider: c.provider,
+                  model: c.model,
+                  images: [aiImageBase64 as string],
                   userMessage: trimmed || undefined,
                 })
               : await runAgentLoop({
-                  provider: "openrouter" as const,
-                  model: m,
+                  provider: c.provider,
+                  model: c.model,
                   systemPrompt: SYSTEM_PROMPT,
                   userMessage: userMsg,
                   hitl: false,
                 });
             // Si es visión y no generó nada (User Safety: safe / JSON inválido), prueba siguiente modelo
-            const isVisionEmpty = aiImageBase64 && (!r.trace || r.trace.length === 0);
+            const isVisionEmpty = isImage && (!r.trace || r.trace.length === 0);
             const isSafety = r.finalContent.includes("User Safety") || r.finalContent.includes("No se pudo generar nada");
             if (isVisionEmpty || isSafety) {
               throw new Error(r.finalContent || "Modelo devolvió safety/vacío, probando siguiente");
@@ -308,6 +320,10 @@ export default function CreateProjectModal({
             break;
           } catch (e) {
             lastErr = e;
+            if (c.provider === "huggingface") {
+              console.warn("[sintetizar]", "HF visión falló, probando siguiente:", e instanceof Error ? e.message : e);
+              continue;
+            }
             const emsg = e instanceof Error ? e.message : String(e);
             // 400 model ID inválido, 401/403/429 auth/rate, o safety/vacío -> prueba siguiente modelo
             if (!/not a valid model ID|401|403|429|Missing Authentication|User Safety|No se pudo generar|agentic harnesses/i.test(emsg)) throw e;

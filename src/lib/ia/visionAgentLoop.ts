@@ -53,15 +53,20 @@ export interface RunVisionResult {
 }
 
 function parseVisionJson(raw: string): unknown {
-  // La visión a veces envuelve en ```json ... ``` o deja texto antes/después.
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
-  const body = fenced ? fenced[1].trim() : trimmed;
-  // recorta hasta el primer "{" y hasta el último "}"
-  const start = body.indexOf("{");
-  const end = body.lastIndexOf("}");
-  const slice = start === -1 || end === -1 || end < start ? body : body.slice(start, end + 1);
-  return JSON.parse(slice) as unknown;
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  try {
+    // La visión a veces envuelve en ```json ... ``` o deja texto antes/despues.
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
+    const body = fenced ? fenced[1].trim() : trimmed;
+    const start = body.indexOf("{");
+    const end = body.lastIndexOf("}");
+    const slice = start === -1 || end === -1 || end < start ? body : body.slice(start, end + 1);
+    return JSON.parse(slice) as unknown;
+  } catch {
+    // contenido vacio/invalido: safeParse(fallo) devuelve el error amigable
+    return null;
+  }
 }
 
 /**

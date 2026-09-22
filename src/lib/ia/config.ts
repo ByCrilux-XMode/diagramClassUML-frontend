@@ -58,6 +58,11 @@ export const IA_VISION_MODEL =
   process.env.NEXT_PUBLIC_IA_VISION_MODEL?.trim() ||
   process.env.IA_VISION_MODEL?.trim() ||
   "qwen3.5:4b";
+/** Modelo VL del fallback de visión por router HF cuando el túnel cae. */
+export const IA_VISION_HF_MODEL =
+  process.env.NEXT_PUBLIC_IA_VISION_HF_MODEL?.trim() ||
+  process.env.IA_VISION_HF_MODEL?.trim() ||
+  "Qwen/Qwen3-VL-30B-A3B-Instruct";
 /**
  * Provider de la ruta visión. Default: el mismo que IA_DEFAULT_PROVIDER
  * (un solo switch migra todo). Se puede independizar, ej. chat en HF

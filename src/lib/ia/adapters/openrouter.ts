@@ -12,8 +12,6 @@ import type {
   IAToolDef,
 } from "@/lib/ia/types";
 
-const CURATED_MODELS: string[] = [];
-
 /**
  * Resuelve las API keys de OpenRouter en orden de prioridad. Solo se ejecuta
  * en el servidor (este módulo jamás se importa desde el bundle de cliente),
@@ -121,7 +119,8 @@ export async function health(): Promise<HealthResult> {
 }
 
 export async function listModels(): Promise<string[]> {
-  // Sin hardcode: devuelve solo tus 3 modelos de .env (OPENROUTER_MODEL*). Si no hay ninguno, lista vacía.
+  // Solo tus modelos de .env + los gratuitos (:free) del catálogo, para que el
+  // dropdown del editor no muestre los miles de modelos de pago.
   const result = new Set<string>(OPENROUTER_MODELS);
   const keys = getKeys();
   if (keys.length === 0) return [...result];
@@ -134,7 +133,7 @@ export async function listModels(): Promise<string[]> {
     if (res.ok) {
       const json = (await res.json()) as { data?: Array<{ id?: string }> };
       for (const item of json.data ?? []) {
-        if (typeof item.id === "string" && item.id) result.add(item.id);
+        if (typeof item.id === "string" && item.id.endsWith(":free")) result.add(item.id);
       }
     }
   } catch {
