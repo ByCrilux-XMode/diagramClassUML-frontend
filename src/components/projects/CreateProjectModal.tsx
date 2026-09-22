@@ -283,7 +283,7 @@ export default function CreateProjectModal({
         for (const m of toTry) {
           try {
             setAiTrace(`Túnel no responde, probando OpenRouter con ${m}...`);
-            result = aiImageBase64
+            const r = aiImageBase64
               ? await runVisionImport({
                   provider: "openrouter" as const,
                   model: m,
@@ -297,13 +297,20 @@ export default function CreateProjectModal({
                   userMessage: userMsg,
                   hitl: false,
                 });
+            // Si es visión y no generó nada (User Safety: safe / JSON inválido), prueba siguiente modelo
+            const isVisionEmpty = aiImageBase64 && (!r.trace || r.trace.length === 0);
+            const isSafety = r.finalContent.includes("User Safety") || r.finalContent.includes("No se pudo generar nada");
+            if (isVisionEmpty || isSafety) {
+              throw new Error(r.finalContent || "Modelo devolvió safety/vacío, probando siguiente");
+            }
+            result = r;
             lastErr = null;
             break;
           } catch (e) {
             lastErr = e;
             const emsg = e instanceof Error ? e.message : String(e);
-            // si es 400 model ID inválido, prueba el siguiente modelo; si es 401/429, también
-            if (!/not a valid model ID|401|429|Missing Authentication/i.test(emsg)) throw e;
+            // 400 model ID inválido, 401/403/429 auth/rate, o safety/vacío -> prueba siguiente modelo
+            if (!/not a valid model ID|401|403|429|Missing Authentication|User Safety|No se pudo generar|agentic harnesses/i.test(emsg)) throw e;
           }
         }
         if (lastErr) throw lastErr;

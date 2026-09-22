@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
   };
   const userMessages = (messages as IAChatMessage[]).slice(-8);
 
-  // Fallback por modelo: prueba tus 3 de .env en orden si uno es agentic-only (403) o 401
+  // Fallback por modelo: prueba tus 3 de .env en orden si uno es agentic-only (403), 401 o devuelve safety
   const { OPENROUTER_MODELS } = await import("@/lib/ia/config");
   const candidates = OPENROUTER_MODELS.length > 0 ? OPENROUTER_MODELS : [IA_HELP_MODEL].filter(Boolean);
   let lastErr: unknown = null;
@@ -63,6 +63,10 @@ export async function POST(request: NextRequest) {
         messages: [system, ...userMessages],
         tools: [],
       });
+      // Si el modelo devuelve safety filter, trátalo como error y prueba el siguiente
+      if (result.content.trim() === "User Safety: safe" || result.content.includes("User Safety")) {
+        throw new Error("Modelo devolvió filtro de seguridad (User Safety: safe), probando siguiente modelo");
+      }
       const parsed = parseHelpJson(result.content);
       return Response.json({
         ...parsed,
@@ -72,11 +76,11 @@ export async function POST(request: NextRequest) {
     } catch (err: unknown) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/not a valid model ID|401|403|429|Missing Authentication|agentic harnesses/i.test(msg)) {
+      if (!/not a valid model ID|401|403|429|Missing Authentication|agentic harnesses|User Safety/i.test(msg)) {
         console.error("[api/ia/help]", msg);
         return Response.json({ error: msg || "El asistente online no está disponible." }, { status: 502 });
       }
-      // 403 agentic-only -> prueba siguiente modelo
+      // 403 agentic-only o safety -> prueba siguiente modelo
     }
   }
   const message = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "El asistente online no está disponible.");
