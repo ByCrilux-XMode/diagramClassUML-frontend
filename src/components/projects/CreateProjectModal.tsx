@@ -30,6 +30,7 @@ import {
   IA_DEFAULT_PROVIDER,
   IA_VISION_PROVIDER,
   OPENROUTER_DEFAULT_MODEL,
+  OPENROUTER_MODELS,
 } from "@/lib/ia/config";
 import { registerDiagram, unregisterDiagram } from "@/lib/editorTools";
 
@@ -266,22 +267,47 @@ export default function CreateProjectModal({
           IA_DEFAULT_PROVIDER === "ollama" ||
           IA_DEFAULT_PROVIDER === "hf-space";
         if (!isTunelError) throw err;
-        // Fallback a OpenRouter con cualquiera de las keys de .env (OPENROUTER_API_KEY* con rotación)
-        setAiTrace("Túnel no responde, reintentando con respaldo OpenRouter...");
-        result = aiImageBase64
-          ? await runVisionImport({
-              provider: "openrouter" as const,
-              model: OPENROUTER_DEFAULT_MODEL,
-              images: [aiImageBase64],
-              userMessage: trimmed || undefined,
-            })
-          : await runAgentLoop({
-              provider: "openrouter" as const,
-              model: OPENROUTER_DEFAULT_MODEL,
-              systemPrompt: SYSTEM_PROMPT,
-              userMessage: userMsg,
-              hitl: false,
-            });
+        // Fallback a OpenRouter: prueba tus 3 modelos de .env en orden hasta que uno responda
+        const candidates = OPENROUTER_MODELS.length > 0 ? OPENROUTER_MODELS : [OPENROUTER_DEFAULT_MODEL].filter(Boolean);
+        if (candidates.length === 0) {
+          throw new Error(
+            "Túnel no responde y no hay modelos OpenRouter configurados. Pon en .env OPENROUTER_MODEL con un ID válido de https://openrouter.ai/models (ej: qwen/qwen-2.5-coder-32b-instruct:free).",
+          );
+        }
+        // valida que no sea un ID de Ollama (qwen3.5:4b, modeloUml, qwen2.5-coder:7b) que OpenRouter rechaza
+        // Ollama IDs nunca tienen "/", OpenRouter siempre tiene "proveedor/modelo"
+        const isOllamaId = (m: string) => !m.includes("/");
+        const validModels = candidates.filter((m) => !isOllamaId(m));
+        const toTry = validModels.length > 0 ? validModels : candidates;
+        let lastErr: unknown = null;
+        for (const m of toTry) {
+          try {
+            setAiTrace(`Túnel no responde, probando OpenRouter con ${m}...`);
+            result = aiImageBase64
+              ? await runVisionImport({
+                  provider: "openrouter" as const,
+                  model: m,
+                  images: [aiImageBase64],
+                  userMessage: trimmed || undefined,
+                })
+              : await runAgentLoop({
+                  provider: "openrouter" as const,
+                  model: m,
+                  systemPrompt: SYSTEM_PROMPT,
+                  userMessage: userMsg,
+                  hitl: false,
+                });
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            const emsg = e instanceof Error ? e.message : String(e);
+            // si es 400 model ID inválido, prueba el siguiente modelo; si es 401/429, también
+            if (!/not a valid model ID|401|429|Missing Authentication/i.test(emsg)) throw e;
+          }
+        }
+        if (lastErr) throw lastErr;
+        if (!result) throw err;
       }
       const hasTrace = result.trace && result.trace.length > 0;
       if (!hasTrace) {

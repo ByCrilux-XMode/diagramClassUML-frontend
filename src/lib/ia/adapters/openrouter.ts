@@ -62,6 +62,12 @@ function toJsonArgs(args: string | Record<string, unknown> | undefined): string 
   return JSON.stringify(args ?? {});
 }
 
+function toImageUrl(img: string): string {
+  const t = img.trim();
+  if (/^data:image\/[a-z+]+;base64,/i.test(t)) return t;
+  return `data:image/jpeg;base64,${t}`;
+}
+
 function toOpenAiMessages(messages: IAChatMessage[]): unknown[] {
   return messages.map((m) => {
     if (m.role === "tool") {
@@ -74,6 +80,16 @@ function toOpenAiMessages(messages: IAChatMessage[]): unknown[] {
         ...(Array.isArray(m.tool_calls) && m.tool_calls.length > 0
           ? { tool_calls: m.tool_calls }
           : {}),
+      };
+    }
+    // Visión: si el mensaje trae images (base64), mandar multipart OpenAI
+    if ((m.role === "user" || m.role === "system") && Array.isArray(m.images) && m.images.length > 0) {
+      return {
+        role: m.role,
+        content: [
+          { type: "text", text: m.content ?? "" },
+          ...m.images.map((img) => ({ type: "image_url", image_url: { url: toImageUrl(img) } })),
+        ],
       };
     }
     return { role: m.role, content: m.content ?? "" };

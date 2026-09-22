@@ -76,19 +76,18 @@ export const IA_CHAT_TIMEOUT_MS = Number(process.env.IA_CHAT_TIMEOUT_MS ?? "1200
 export const IA_NUM_CTX = Number(process.env.IA_NUM_CTX ?? "8192");
 
 /**
- * OpenRouter — 1 key + 3 modelos (sin hardcode, tú los pones).
- * Todo server-side, nunca NEXT_PUBLIC_. El frontend solo elige el modelo
- * que tú configuraste en .env.
+ * OpenRouter — 1 key (server-side, nunca NEXT_PUBLIC_) + 3 modelos
+ * (IDs públicos, visibles en cliente para el fallback del modal).
  */
 export const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai";
 export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() ?? "";
-// 3 modelos configurables por ti (sin default hardcodeado)
+// 3 modelos configurables por ti — lee tanto NEXT_PUBLIC_ (cliente) como sin prefijo (servidor)
 export const OPENROUTER_MODELS: string[] = [
-  process.env.OPENROUTER_MODEL?.trim(),
-  process.env.OPENROUTER_MODEL_1?.trim(),
-  process.env.OPENROUTER_MODEL_2?.trim(),
-  ...(process.env.OPENROUTER_MODELS ?? "").split(","),
+  process.env.NEXT_PUBLIC_OPENROUTER_MODEL?.trim() || process.env.OPENROUTER_MODEL?.trim(),
+  process.env.NEXT_PUBLIC_OPENROUTER_MODEL_1?.trim() || process.env.OPENROUTER_MODEL_1?.trim(),
+  process.env.NEXT_PUBLIC_OPENROUTER_MODEL_2?.trim() || process.env.OPENROUTER_MODEL_2?.trim(),
+  ...(process.env.NEXT_PUBLIC_OPENROUTER_MODELS?.trim() || process.env.OPENROUTER_MODELS || "").split(","),
 ]
   .map((s) => (s ?? "").trim())
   .filter((s) => s.length > 0);
