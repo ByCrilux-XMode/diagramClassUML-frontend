@@ -178,15 +178,18 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
     throw new Error("Falta HF_TOKEN en el servidor para el proveedor Hugging Face.");
   }
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     model: endpoint.payloadModel,
     messages: toHfMessages(req.messages),
-    tools: req.tools as IAToolDef[],
-    tool_choice: "auto",
     stream: false,
     temperature: 0.2,
     max_tokens: 2048,
   };
+  // El router HF rechaza `tools: []` con 400; solo enviarlo si hay herramientas.
+  if (req.tools && req.tools.length > 0) {
+    payload.tools = req.tools as IAToolDef[];
+    payload.tool_choice = "auto";
+  }
 
   const res = await fetchWithTimeout(endpoint.url, {
     method: "POST",
