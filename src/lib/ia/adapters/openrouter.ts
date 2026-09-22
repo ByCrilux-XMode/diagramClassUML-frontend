@@ -174,7 +174,7 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${keys[i]}`,
-            "HTTP-Referer": process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000",
+            "HTTP-Referer": req.httpReferer ?? process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000",
             "X-Title": "Diagramador UML colaborativo",
           },
           body: JSON.stringify(payload),

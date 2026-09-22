@@ -31,6 +31,8 @@ export interface IAChatRequestBody {
   model: string;
   messages: IAChatMessage[];
   tools: IAToolDef[];
+  /** OpenRouter: origin real del request (HTTP-Referer). En Vercel debe ser el dominio del frontend, no el base del backend. */
+  httpReferer?: string;
 }
 
 export interface IAChatResponse {

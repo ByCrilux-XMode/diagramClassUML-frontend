@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
       model: model.trim(),
       messages: messages as IAChatMessage[],
       tools,
+      httpReferer: new URL(request.url).origin,
     });
     return Response.json(result);
   } catch (err: unknown) {

@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
         model: m,
         messages: [system, ...userMessages],
         tools: [],
+        httpReferer: new URL(request.url).origin,
       });
       // Si el modelo devuelve safety filter, trátalo como error y prueba el siguiente
       if (result.content.trim() === "User Safety: safe" || result.content.includes("User Safety")) {
