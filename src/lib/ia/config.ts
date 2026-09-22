@@ -76,21 +76,32 @@ export const IA_CHAT_TIMEOUT_MS = Number(process.env.IA_CHAT_TIMEOUT_MS ?? "1200
 export const IA_NUM_CTX = Number(process.env.IA_NUM_CTX ?? "8192");
 
 /**
- * OpenRouter (asistente de /proyectos y chat IA opcional).
- * Las API keys viven SOLO en el servidor (se leen dentro del adapter, nunca
- * con prefijo NEXT_PUBLIC_). Se soportan hasta 3 keys en llaves: el adapter
- * prueba cada una en orden y usa la primera que responda.
- *  - OPENROUTER_API_KEY        → key principal (fallback 0)
- *  - OPENROUTER_API_KEY_1..3   → fallbacks 1..3
- *  - OPENROUTER_API_KEYS       → lista separada por comas (alternativa)
+ * OpenRouter — 1 key + 3 modelos (sin hardcode, tú los pones).
+ * Todo server-side, nunca NEXT_PUBLIC_. El frontend solo elige el modelo
+ * que tú configuraste en .env.
  */
 export const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai";
-export const OPENROUTER_DEFAULT_MODEL =
+export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() ?? "";
+// 3 modelos configurables por ti (sin default hardcodeado)
+export const OPENROUTER_MODELS: string[] = [
+  process.env.OPENROUTER_MODEL?.trim(),
+  process.env.OPENROUTER_MODEL_1?.trim(),
+  process.env.OPENROUTER_MODEL_2?.trim(),
+  ...(process.env.OPENROUTER_MODELS ?? "").split(","),
+]
+  .map((s) => (s ?? "").trim())
+  .filter((s) => s.length > 0);
+// Compat: si aún usas OPENROUTER_DEFAULT_MODEL, también se incluye
+const _legacyModel =
   process.env.NEXT_PUBLIC_OPENROUTER_DEFAULT_MODEL?.trim() ||
   process.env.OPENROUTER_DEFAULT_MODEL?.trim() ||
-  "openai/gpt-4o-mini";
-/** Modelo usado por la ruta /api/ia/help (asistente de /proyectos). */
+  "";
+if (_legacyModel && !OPENROUTER_MODELS.includes(_legacyModel)) {
+  OPENROUTER_MODELS.unshift(_legacyModel);
+}
+export const OPENROUTER_DEFAULT_MODEL = OPENROUTER_MODELS[0] ?? "";
+/** Modelo usado por la ruta /api/ia/help (usa el primero de tus 3). */
 export const IA_HELP_MODEL =
   process.env.NEXT_PUBLIC_IA_HELP_MODEL?.trim() ||
   process.env.IA_HELP_MODEL?.trim() ||

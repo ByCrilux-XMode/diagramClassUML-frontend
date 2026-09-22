@@ -1,6 +1,7 @@
 import {
   IA_CHAT_TIMEOUT_MS,
   OPENROUTER_BASE_URL,
+  OPENROUTER_MODELS,
 } from "@/lib/ia/config";
 import type {
   HealthResult,
@@ -11,12 +12,7 @@ import type {
   IAToolDef,
 } from "@/lib/ia/types";
 
-const CURATED_MODELS = [
-  "openai/gpt-4o-mini",
-  "openai/gpt-4o",
-  "anthropic/claude-3.5-haiku",
-  "meta-llama/llama-3.3-70b-instruct",
-];
+const CURATED_MODELS: string[] = [];
 
 /**
  * Resuelve las API keys de OpenRouter en orden de prioridad. Solo se ejecuta
@@ -29,9 +25,6 @@ const CURATED_MODELS = [
 function resolveApiKeys(): string[] {
   const sources = [
     process.env.OPENROUTER_API_KEY,
-    process.env.OPENROUTER_API_KEY_1,
-    process.env.OPENROUTER_API_KEY_2,
-    process.env.OPENROUTER_API_KEY_3,
     ...(process.env.OPENROUTER_API_KEYS ?? "").split(","),
   ];
   const keys = Array.from(
@@ -105,15 +98,15 @@ export async function health(): Promise<HealthResult> {
   if (keys.length === 0) {
     return {
       ok: false,
-      error:
-        "Faltan claves de OpenRouter en el servidor. Configura OPENROUTER_API_KEY (y opcionalmente OPENROUTER_API_KEY_1..3).",
+      error: "Faltan claves de OpenRouter en el servidor. Configura OPENROUTER_API_KEY.",
     };
   }
   return { ok: true };
 }
 
 export async function listModels(): Promise<string[]> {
-  const result = new Set<string>(CURATED_MODELS);
+  // Sin hardcode: devuelve solo tus 3 modelos de .env (OPENROUTER_MODEL*). Si no hay ninguno, lista vacía.
+  const result = new Set<string>(OPENROUTER_MODELS);
   const keys = getKeys();
   if (keys.length === 0) return [...result];
   try {
@@ -129,7 +122,7 @@ export async function listModels(): Promise<string[]> {
       }
     }
   } catch {
-    // sin red: se devuelve la lista curada
+    // sin red: se devuelve solo tus modelos
   }
   return [...result];
 }
@@ -142,9 +135,7 @@ export async function listModels(): Promise<string[]> {
 export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
   const keys = getKeys();
   if (keys.length === 0) {
-    throw new Error(
-      "Faltan claves de OpenRouter en el servidor. Configura OPENROUTER_API_KEY (y opcionalmente OPENROUTER_API_KEY_1..3)."
-    );
+    throw new Error("Faltan claves de OpenRouter en el servidor. Configura OPENROUTER_API_KEY.");
   }
 
   const payload = {
