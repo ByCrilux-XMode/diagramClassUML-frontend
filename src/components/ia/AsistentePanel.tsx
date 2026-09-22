@@ -16,6 +16,7 @@ import {
 import { useIAChat } from "@/hooks/useIAChat";
 import type { ChatEntry } from "@/hooks/useIAChat";
 import type { IAProvider, PendingProposal } from "@/lib/ia/types";
+import { HF_USE_ROUTER } from "@/lib/ia/config";
 
 const QUICK_ACTIONS: Array<{ label: string; prompt: string }> = [
   { label: "Validar", prompt: "Ejecuta validate para revisar el diagrama actual y dime qué observaciones hay." },
@@ -309,8 +310,10 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
               disabled={pensando}
               className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
             >
-              <option value="ollama">Local (Ollama)</option>
-              <option value="huggingface">Hugging Face</option>
+              <option value="ollama">Ollama — Túnel PC (Cloudflare, examen)</option>
+              <option value="hf-space">HF Space — Respaldo (ZeroGPU, público)</option>
+              {HF_USE_ROUTER && <option value="huggingface">Hugging Face (Inferencia)</option>}
+              {HF_USE_ROUTER && <option value="openrouter">OpenRouter</option>}
             </select>
           </label>
           <label className="flex flex-col gap-1">

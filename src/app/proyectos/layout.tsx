@@ -5,15 +5,21 @@ import { useRouter } from "next/navigation";
 import { FolderTree, LogOut, Plus, Settings, Users } from "lucide-react";
 import AppShell from "@/components/layout/AppShell";
 import CreateProjectModal from "@/components/projects/CreateProjectModal";
+import ExportBackendModal from "@/components/backend/ExportBackendModal";
 import PageLoader from "@/components/ui/PageLoader";
 import { useAuth } from "@/hooks/useAuth";
+import { useHelpActions } from "@/lib/helpActions";
 
 export default function ProyectosLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [createOpen, setCreateOpen] = useState(false);
+  const createOpen = useHelpActions((s) => s.createOpen);
+  const openCreateModal = useHelpActions((s) => s.openCreateModal);
+  const closeCreateModal = useHelpActions((s) => s.closeCreateModal);
+  const exportTarget = useHelpActions((s) => s.exportTarget);
+  const closeExportModal = useHelpActions((s) => s.closeExportModal);
   const [isExiting, setIsExiting] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [isLoaderFading, setIsLoaderFading] = useState(false);
@@ -55,14 +61,14 @@ export default function ProyectosLayout({
 
   const handleCloseModal = () => {
     if (isExiting || isNavigating) return;
-    setCreateOpen(false);
+    closeCreateModal();
   };
 
   const handleCreated = (proyecto: { proyectoId: number }) => {
     setIsExiting(true);
     // 1) modal se desvanece (250ms)
     setTimeout(() => {
-      setCreateOpen(false);
+      closeCreateModal();
       setIsExiting(false);
       setIsNavigating(true);
       bumpRefresh();
@@ -106,11 +112,11 @@ export default function ProyectosLayout({
       cta={{
         label: "New Project",
         icon: Plus,
-        onClick: () => setCreateOpen(true),
+        onClick: () => openCreateModal(),
       }}
       ctaMobile={{
         label: "Nuevo",
-        onClick: () => setCreateOpen(true),
+        onClick: () => openCreateModal(),
       }}
     >
       {children}
@@ -120,6 +126,13 @@ export default function ProyectosLayout({
         isExiting={isExiting}
         onClose={handleCloseModal}
         onCreated={handleCreated}
+      />
+      <ExportBackendModal
+        key={exportTarget ? `${exportTarget.proyectoId}-open` : "export-closed"}
+        open={exportTarget !== null}
+        onClose={closeExportModal}
+        proyectoId={exportTarget?.proyectoId ?? -1}
+        nombreProyecto={exportTarget?.nombre ?? ""}
       />
       {isNavigating && (
         <div

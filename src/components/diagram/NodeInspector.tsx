@@ -129,7 +129,7 @@ function AttributesCard({
   data: Extract<UmlNodeData, { category: "Class" }>;
   commit: (updates: Record<string, unknown>) => void;
 }) {
-  const attrs = data.attributes;
+  const attrs = Array.isArray(data.attributes) ? data.attributes : [];
   const patch = (index: number, attr: AttributeData) =>
     commit({
       attributes: attrs.map((a, i) => (i === index ? attr : a)),
@@ -224,7 +224,7 @@ function MethodsCard({
   data: Extract<UmlNodeData, { category: "Class" | "Interface" }>;
   commit: (updates: Record<string, unknown>) => void;
 }) {
-  const methods = data.methods;
+  const methods = Array.isArray(data.methods) ? data.methods : [];
   const patch = (index: number, method: MethodData) =>
     commit({
       methods: methods.map((m, i) => (i === index ? method : m)),
@@ -404,7 +404,7 @@ function LiteralsCard({
   data: Extract<UmlNodeData, { category: "Enum" }>;
   commit: (updates: Record<string, unknown>) => void;
 }) {
-  const literals = data.literals;
+  const literals = Array.isArray(data.literals) ? data.literals : [];
   const patch = (index: number, value: string) =>
     commit({ literals: literals.map((l, i) => (i === index ? value : l)) });
   const remove = (index: number) =>

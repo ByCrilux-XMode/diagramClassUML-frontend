@@ -27,7 +27,7 @@
  *   6. Devuelve AgentResult con trace + warnings, igual que runAgentLoop,
  *      para que la UI (CreateProjectModal) lo consuma sin cambios de API.
  */
-import type { IAChatMessage } from "./types";
+import type { IAProvider, IAChatMessage } from "./types";
 import { VISION_SYSTEM_PROMPT, VISION_DEFAULT_MODEL } from "./visionSystemPrompt";
 export { VISION_DEFAULT_MODEL };
 import { VISION_OUTPUT_SCHEMA, validateCrossReferences, normalizeVisionKeys } from "./visionSchema";
@@ -35,7 +35,7 @@ import { visionSchemaToToolCalls } from "./visionSchemaToToolCalls";
 import { validateArgs, executeTool } from "@/lib/editorTools";
 
 export interface RunVisionParams {
-  provider: "ollama" | "huggingface";
+  provider: IAProvider;
   model?: string;
   /** Imagen(es) en base64 (data URL o base64 crudo). */
   images: string[];

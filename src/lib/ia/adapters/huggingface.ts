@@ -1,4 +1,4 @@
-import { HF_BASE_URL, HF_TOKEN, IA_CHAT_TIMEOUT_MS } from "@/lib/ia/config";
+import { HF_BASE_URL, HF_MODELS_URL, HF_TOKEN, IA_CHAT_TIMEOUT_MS } from "@/lib/ia/config";
 import type {
   HealthResult,
   IAChatRequestBody,
@@ -9,8 +9,8 @@ import type {
 
 const CURATED_MODELS = [
   "meta-llama/Llama-3.1-8B-Instruct",
-  "microsoft/Phi-3.5-mini-instruct",
-  "google/gemma-2-27b-it",
+  "Qwen/Qwen3.8-27B",
+  "openai/gpt-oss-120b",
 ];
 
 interface RawChoice {
@@ -68,19 +68,43 @@ export async function health(): Promise<HealthResult> {
   return { ok: true };
 }
 
+interface RouterProviderInfo {
+  supports_tools?: boolean;
+}
+
+/** True si el modelo puede llamar herramientas. Sin info de providers → se
+ *  deja pasar (no se puede comprobar). */
+function supportsTools(item: { providers?: RouterProviderInfo[] }): boolean {
+  const providers = item.providers;
+  if (!Array.isArray(providers) || providers.length === 0) return true;
+  return providers.some((p) => p.supports_tools === true);
+}
+
+/** Tope del dropdown para que no salga "la millonada" completa. El modo de
+ *  entrada libre permite escribir cualquier modelo a mano. */
+const MAX_LISTED_MODELS = 40;
+
 export async function listModels(): Promise<string[]> {
   const result = new Set<string>(CURATED_MODELS);
   if (HF_TOKEN) {
     try {
       const res = await fetchWithTimeout(
-        "https://huggingface.co/api/models?sort=likes&limit=24&filter=conversational",
-        {},
+        HF_MODELS_URL,
+        { headers: { Authorization: `Bearer ${HF_TOKEN}` } },
         10000
       );
       if (res.ok) {
-        const items = (await res.json()) as Array<{ id?: string }>;
-        for (const item of items) {
-          if (typeof item.id === "string" && item.id) result.add(item.id);
+        const json = (await res.json()) as
+          | Array<{ id?: string } & { providers?: RouterProviderInfo[] }>
+          | { data?: Array<{ id?: string } & { providers?: RouterProviderInfo[] }> };
+        const items = (Array.isArray(json) ? json : json.data ?? []) as Array<{
+          id?: string;
+          providers?: RouterProviderInfo[];
+        }>;
+        for (const item of items.slice(0, MAX_LISTED_MODELS)) {
+          if (typeof item.id === "string" && item.id && supportsTools(item)) {
+            result.add(item.id);
+          }
         }
       }
     } catch {

@@ -1,8 +1,37 @@
 import type { IAProvider } from "./types";
 
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL?.trim() || "http://127.0.0.1:11434";
-export const HF_BASE_URL = process.env.HF_BASE_URL?.trim() || "https://api-inference.huggingface.co";
+// Túnel Cloudflare para el examen (mismo adapter ollama, distinta URL).
+export const OLLAMA_TUNEL_URL =
+  process.env.NEXT_PUBLIC_OLLAMA_TUNEL_URL?.trim() ||
+  process.env.OLLAMA_TUNEL_URL?.trim() ||
+  OLLAMA_BASE_URL;
+// HF Space LoRA respaldo (público, ZeroGPU) — https://CHRISTS20-qwn-uml-space.hf.space
+export const HF_SPACE_URL =
+  process.env.NEXT_PUBLIC_HF_SPACE_URL?.trim() ||
+  process.env.HF_SPACE_URL?.trim() ||
+  "https://CHRISTS20-qwn-uml-space.hf.space";
+/**
+ * Router de Inference Providers: endpoint OpenAI-compatible ACTUAL de Hugging
+ * Face. El host heredado api-inference.huggingface.co dejó de existir en DNS y
+ * hace que el servidor lance "fetch failed". Para desactivar este router y
+ * volver al comportamiento heredado usa HF_USE_ROUTER=0 (también cambia el
+ * origen del listado de modelos).
+ */
+export const HF_USE_ROUTER =
+  (process.env.NEXT_PUBLIC_HF_USE_ROUTER?.trim() || process.env.HF_USE_ROUTER?.trim() || "1") !== "0";
+export const HF_BASE_URL =
+  process.env.HF_BASE_URL?.trim() ||
+  (HF_USE_ROUTER ? "https://router.huggingface.co" : "https://api-inference.huggingface.co");
 export const HF_TOKEN = process.env.HF_TOKEN?.trim() ?? "";
+/**
+ * Fuente del listado de modelos de chat:
+ *  - router: /v1/models → solo modelos que el router puede servir.
+ *  - heredado: top 24 "conversational" del Hub (muchos no los sirve el router).
+ */
+export const HF_MODELS_URL = HF_USE_ROUTER
+  ? "https://router.huggingface.co/v1/models"
+  : "https://huggingface.co/api/models?sort=likes&limit=24&filter=conversational";
 /**
  * Config IA por .env — cada clave se lee en este orden para que un mismo
  * .env gobierne servidor y navegador (el bundle cliente solo inlina las
@@ -12,11 +41,14 @@ export const HF_TOKEN = process.env.HF_TOKEN?.trim() ?? "";
  *   3. fallback local (Ollama)
  * Migración a Hugging Face: basta con setear las claves en .env.
  */
-export const IA_DEFAULT_PROVIDER: IAProvider =
-  (process.env.NEXT_PUBLIC_IA_DEFAULT_PROVIDER?.trim() ||
-    process.env.IA_DEFAULT_PROVIDER?.trim()) === "huggingface"
-    ? "huggingface"
-    : "ollama";
+export const IA_DEFAULT_PROVIDER: IAProvider = (() => {
+  const raw =
+    process.env.NEXT_PUBLIC_IA_DEFAULT_PROVIDER?.trim() ||
+    process.env.IA_DEFAULT_PROVIDER?.trim() ||
+    "";
+  if (raw === "huggingface" || raw === "openrouter" || raw === "hf-space") return raw as IAProvider;
+  return "ollama";
+})();
 export const IA_DEFAULT_MODEL =
   process.env.NEXT_PUBLIC_IA_DEFAULT_MODEL?.trim() ||
   process.env.IA_DEFAULT_MODEL?.trim() ||
@@ -36,9 +68,30 @@ export const IA_VISION_PROVIDER: IAProvider = (() => {
     process.env.NEXT_PUBLIC_IA_VISION_PROVIDER?.trim() ||
     process.env.IA_VISION_PROVIDER?.trim() ||
     "";
-  if (raw === "huggingface" || raw === "ollama") return raw;
+  if (raw === "huggingface" || raw === "ollama" || raw === "hf-space" || raw === "openrouter") return raw as IAProvider;
   return IA_DEFAULT_PROVIDER;
 })();
 export const IA_MAX_TOOL_ROUNDS = Number(process.env.IA_MAX_TOOL_ROUNDS ?? "10");
 export const IA_CHAT_TIMEOUT_MS = Number(process.env.IA_CHAT_TIMEOUT_MS ?? "120000");
 export const IA_NUM_CTX = Number(process.env.IA_NUM_CTX ?? "8192");
+
+/**
+ * OpenRouter (asistente de /proyectos y chat IA opcional).
+ * Las API keys viven SOLO en el servidor (se leen dentro del adapter, nunca
+ * con prefijo NEXT_PUBLIC_). Se soportan hasta 3 keys en llaves: el adapter
+ * prueba cada una en orden y usa la primera que responda.
+ *  - OPENROUTER_API_KEY        → key principal (fallback 0)
+ *  - OPENROUTER_API_KEY_1..3   → fallbacks 1..3
+ *  - OPENROUTER_API_KEYS       → lista separada por comas (alternativa)
+ */
+export const OPENROUTER_BASE_URL =
+  process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai";
+export const OPENROUTER_DEFAULT_MODEL =
+  process.env.NEXT_PUBLIC_OPENROUTER_DEFAULT_MODEL?.trim() ||
+  process.env.OPENROUTER_DEFAULT_MODEL?.trim() ||
+  "openai/gpt-4o-mini";
+/** Modelo usado por la ruta /api/ia/help (asistente de /proyectos). */
+export const IA_HELP_MODEL =
+  process.env.NEXT_PUBLIC_IA_HELP_MODEL?.trim() ||
+  process.env.IA_HELP_MODEL?.trim() ||
+  OPENROUTER_DEFAULT_MODEL;

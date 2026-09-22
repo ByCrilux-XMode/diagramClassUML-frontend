@@ -141,3 +141,65 @@ export function searchHelp(query: string, limit = 3): HelpEntry[] {
     .map((x) => x.e);
   return scored.length ? scored : HELP_ENTRIES.slice(0, 3);
 }
+
+/**
+ * Detección local rápida y determinista de órdenes fuertes del usuario.
+ * Se ejecuta ANTES de llamar a la IA online (OpenRouter) para que gestos como
+ * "crea un proyecto" disparen el modal al instante, incluso sin red.
+ *
+ * Casos que NO intercepta (los deja pasar a la IA/guía local):
+ *  - "quiero crear un proyecto" → explica cómo (intención explain).
+ *  - "como descargar..." (sin proyecto concreto) → explica + botones.
+ *  - "como creo un proyecto" → explica.
+ */
+export type QuickIntent =
+  | { intent: "open_create_modal" }
+  | { intent: "download_backend"; projectId?: number; projectName?: string }
+  | { intent: "open_project"; projectId: number; projectName: string };
+
+export function detectQuickIntent(
+  raw: string,
+  projects: Array<{ proyectoId: number; nombre: string }>
+): QuickIntent | null {
+  const t = normalize(raw);
+  if (!t) return null;
+
+  const matchProject = (): { proyectoId: number; nombre: string } | null => {
+    for (const p of projects) {
+      if (t.includes(normalize(p.nombre))) return p;
+    }
+    return null;
+  };
+
+  // Órden directa de crear: "crea un proyecto", "nuevo proyecto", "haz un proyecto".
+  // Se excluye "quiero"/"como" que piden consejo, no ejecución.
+  const ordenCrear =
+    /\b(crea|creame|hazme|haz|nuevo|dame)\b/.test(t) &&
+    /\bproyecto\b/.test(t) &&
+    !/\b(quiero|quisiera|como|ayuda|explicame|queria)\b/.test(t);
+  if (ordenCrear) return { intent: "open_create_modal" };
+
+  // Descargar/exportar: si menciona un proyecto concreto, lo llevamos directo.
+  const ordenDescargar =
+    /\b(descargar|descarga|descargo|descargame|exportar|exporta|bajar|bajame|bajar)\b/.test(t) &&
+    /\b(backend|zip|exportacion|export|jar|api)\b/.test(t);
+  if (ordenDescargar) {
+    const found = matchProject();
+    return {
+      intent: "download_backend",
+      projectId: found?.proyectoId,
+      projectName: found?.nombre,
+    };
+  }
+
+  // Abrir un proyecto concreto en el editor.
+  const ordenAbrir = /\b(abrir|abre|entrar|abreme|abrime)\b/.test(t) && /\b(proyecto|editor|diagrama)\b/.test(t);
+  if (ordenAbrir) {
+    const found = matchProject();
+    if (found) {
+      return { intent: "open_project", projectId: found.proyectoId, projectName: found.nombre };
+    }
+  }
+
+  return null;
+}

@@ -1,4 +1,4 @@
-export type IAProvider = "ollama" | "huggingface";
+export type IAProvider = "ollama" | "huggingface" | "openrouter" | "hf-space";
 
 export interface IAToolFunction {
   name: string;
@@ -37,6 +37,8 @@ export interface IAChatResponse {
   content: string;
   toolCalls: IAToolCall[];
   model?: string;
+  /** OpenRouter: nº de fallbacks de key que hubo que probar antes de acertar. */
+  keyFallbacksUsed?: number;
 }
 
 export interface TurnTrace {

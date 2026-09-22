@@ -1,13 +1,33 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { HelpCircle, Search, Send, X, Sparkles, ChevronRight } from "lucide-react";
-import { HELP_ENTRIES, searchHelp, type HelpEntry } from "@/lib/ayuda/knowledge";
+import { useRouter } from "next/navigation";
+import { HelpCircle, Search, Send, X, Sparkles, ChevronRight, Loader2, Download, WifiOff } from "lucide-react";
+import { HELP_ENTRIES, searchHelp, detectQuickIntent, type HelpEntry, type QuickIntent } from "@/lib/ayuda/knowledge";
+import { useHelpActions } from "@/lib/helpActions";
+import { useAuth, type ProyectoItem } from "@/hooks/useAuth";
 
-type Msg = { id: string; role: "user" | "assistant"; text: string; entries?: HelpEntry[] };
+type Msg = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  entries?: HelpEntry[];
+  projects?: ProyectoItem[];
+  notice?: string;
+};
 
-function normalize(s: string) {
-  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+interface HelpAiPayload {
+  intent: "open_create_modal" | "open_project" | "download_backend" | "explain";
+  text: string;
+  projectId: number | null;
+  helpIds: string[];
+  keyFallbacksUsed?: number;
+}
+
+let msgSeq = 0;
+function nextMsgId(): string {
+  msgSeq += 1;
+  return `msg-${Date.now()}-${msgSeq}`;
 }
 
 function Inline({ text }: { text: string }) {
@@ -125,16 +145,23 @@ function HelpMarkdown({ text }: { text: string }) {
 }
 
 export default function HelpAssistant() {
+  const router = useRouter();
+  const openCreateModal = useHelpActions((s) => s.openCreateModal);
+  const openExportModal = useHelpActions((s) => s.openExportModal);
+  const proyectos = useAuth((s) => s.proyectos);
+
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>(() => [
     {
       id: "welcome",
       role: "assistant",
-      text: "¡Hola! Soy tu asistente de **/proyectos**. Pregúntame *cómo crear un proyecto, descargar el backend, usar la IA, /api/schema, voz offline*... También puedes tocar un atajo.",
+      text: "¡Hola! Soy tu asistente de **/proyectos**. Dime cosas como **\"crea un proyecto\"** (lo abro al instante), **\"quiero crear un proyecto\"**, **\"cómo descargo el backend\"** o **\"abre veterinaria\"**. También puedes tocar un atajo o buscar un tema.",
     },
   ]);
   const [selected, setSelected] = useState<HelpEntry | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [iaOnline, setIaOnline] = useState<boolean | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const chips = useMemo(() => {
@@ -146,38 +173,176 @@ export default function HelpAssistant() {
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [msgs, selected]);
+  }, [msgs, selected, aiBusy]);
 
-  const pushUser = (text: string) => {
-    const id = Date.now().toString();
-    setMsgs((m) => [...m, { id, role: "user", text }]);
-    const hits = searchHelp(text, 3);
-    if (hits.length === 0) {
-      setMsgs((m) => [...m, { id: id + "-a", role: "assistant", text: "No encontré coincidencia exacta. Prueba con: *crear proyecto, descargar backend, /api/schema, IA, voz offline* — o elige un tema abajo.", entries: HELP_ENTRIES.slice(0, 3) }]);
+  useEffect(() => {
+    if (!open || iaOnline !== null) return;
+    fetch("/api/ia/health?provider=openrouter")
+      .then((r) => r.json().catch(() => ({ ok: false })))
+      .then((d) => setIaOnline(d.ok === true))
+      .catch(() => setIaOnline(false));
+  }, [open, iaOnline]);
+
+  const pushAssistant = (msg: Omit<Msg, "id" | "role">) => {
+    setMsgs((m) => [...m, { id: nextMsgId(), role: "assistant", ...msg }]);
+  };
+
+  const entriesFromIds = (ids: string[]): HelpEntry[] =>
+    ids
+      .map((id) => HELP_ENTRIES.find((e) => e.id === id))
+      .filter((e): e is HelpEntry => Boolean(e));
+
+  // ─── Intención local (rápida y determinista) ────────────────────────────
+  const ejecutarQuickIntent = (q: QuickIntent) => {
+    if (q.intent === "open_create_modal") {
+      openCreateModal();
+      pushAssistant({
+        text: "¡Listo! Te abro el modal de **Nuevo Proyecto**.\nPonle un nombre sin tildes ni espacios (ej. `veterinaria`), elige *empezar en blanco* y pulsa **Crear y abrir diagrama**.",
+        entries: [HELP_ENTRIES.find((e) => e.id === "crear-proyecto")!],
+      });
       return;
     }
-    // si hay match fuerte, mostrar el top 1 expandido + resto como sugerencias
+    if (q.intent === "download_backend") {
+      if (q.projectId && proyectos.some((p) => p.proyectoId === q.projectId)) {
+        openExportModal({ proyectoId: q.projectId, nombre: q.projectName ?? "" });
+        pushAssistant({
+          text: `Te abrí la **descarga del backend** de \`${q.projectName}\`.\nRevisa el preview (entidades/FK) y pulsa **Descargar ZIP**.`,
+          entries: [HELP_ENTRIES.find((e) => e.id === "exportar-backend")!],
+        });
+      } else {
+        respuestaDescargaSinDestino();
+      }
+      return;
+    }
+    if (q.intent === "open_project") {
+      router.push(`/editor/${q.projectId}`);
+      pushAssistant({
+        text: `Abriendo **${q.projectName}** en el editor...`,
+      });
+      return;
+    }
+  };
+
+  const respuestaDescargaSinDestino = () => {
+    const top = HELP_ENTRIES.find((e) => e.id === "exportar-backend");
+    pushAssistant({
+      text: `Voy a ayudarte con la **descarga del backend**. Este es el camino:\n${top?.respuesta ?? ""}\nY si quieres, dímelo concreto (*\"descarga veterinaria\"*) o elige abajo de qué proyecto te abro la descarga directa:`,
+      entries: proyectos.length > 0 ? undefined : [],
+      projects: proyectos.length > 0 ? proyectos : undefined,
+    });
+  };
+
+  // ─── Intención devuelta por la IA (OpenRouter) ──────────────────────────
+  const ejecutarAiIntent = (data: HelpAiPayload) => {
+    const entries = entriesFromIds(data.helpIds ?? []);
+
+    if (data.intent === "open_create_modal") {
+      openCreateModal();
+      pushAssistant({ text: data.text || "Te abro el modal de **Nuevo Proyecto**.", entries });
+      return;
+    }
+    if (data.intent === "download_backend") {
+      const objetivo =
+        data.projectId !== null
+          ? proyectos.find((p) => p.proyectoId === data.projectId)
+          : undefined;
+      if (objetivo) {
+        openExportModal({ proyectoId: objetivo.proyectoId, nombre: objetivo.nombre });
+        pushAssistant({ text: data.text || `Te abro la descarga de \`${objetivo.nombre}\`.`, entries });
+      } else {
+        respuestaDescargaSinDestino();
+      }
+      return;
+    }
+    if (data.intent === "open_project") {
+      const objetivo = proyectos.find((p) => p.proyectoId === data.projectId);
+      if (objetivo) {
+        router.push(`/editor/${objetivo.proyectoId}`);
+        pushAssistant({ text: data.text || `Abriendo **${objetivo.nombre}**...`, entries });
+      } else {
+        pushAssistant({ text: data.text || "Selecciona un proyecto para abrir.", entries });
+      }
+      return;
+    }
+    // explain
+    pushAssistant({ text: data.text || "Te cuento cómo hacerlo.", entries });
+  };
+
+  // ─── Fallback local (sin OpenRouter / sin red) ───────────────────────────
+  const respuestaLocal = (text: string) => {
+    const hits = searchHelp(text, 3);
+    if (hits.length === 0) {
+      pushAssistant({
+        text: "No encontré coincidencia exacta en la guía local. Prueba con: *crear proyecto, descargar backend, /api/schema, IA, voz offline* — o elige un tema abajo.",
+        notice: "Asistente online no disponible (OpenRouter) — usando guía local.",
+        entries: HELP_ENTRIES.slice(0, 3),
+      });
+      return;
+    }
     const top = hits[0];
     const rest = hits.slice(1);
     setSelected(top);
-    setMsgs((m) => [...m, { id: id + "-a", role: "assistant", text: `Encontré **${hits.length}** tema(s) para *"${text}"*. Te muestro el más relevante: **${top.titulo}**.`, entries: rest }]);
+    pushAssistant({
+      text: `Encontré **${hits.length}** tema(s) para *"${text}"*. Te muestro el más relevante: **${top.titulo}**.`,
+      notice: "Asistente online no disponible (OpenRouter) — usando guía local.",
+      entries: rest,
+    });
+  };
+
+  const pushUser = async (rawText: string) => {
+    const text = rawText.trim();
+    if (!text) return;
+    setMsgs((m) => [...m, { id: nextMsgId(), role: "user", text }]);
+
+    // 1) Órdenes fuertes y deterministas: respuesta al instante, sin red.
+    const quick = detectQuickIntent(text, proyectos);
+    if (quick) {
+      ejecutarQuickIntent(quick);
+      return;
+    }
+
+    // 2) IA online (OpenRouter, con fallback de hasta 3 keys en el servidor).
+    setAiBusy(true);
+    try {
+      const res = await fetch("/api/ia/help", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: text }],
+          projects: proyectos,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<HelpAiPayload> & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "No disponible.");
+      ejecutarAiIntent({
+        intent: data.intent ?? "explain",
+        text: data.text ?? "",
+        projectId: data.projectId ?? null,
+        helpIds: data.helpIds ?? [],
+      });
+    } catch {
+      // 3) Sin OpenRouter/red → guía local existente.
+      respuestaLocal(text);
+    } finally {
+      setAiBusy(false);
+    }
   };
 
   const handleSend = () => {
     const t = query.trim();
-    if (!t) return;
+    if (!t || aiBusy) return;
     setQuery("");
-    pushUser(t);
+    void pushUser(t);
   };
 
   const handleChip = (chip: string) => {
     setQuery(chip);
-    pushUser(chip);
+    void pushUser(chip);
   };
 
   const handlePick = (e: HelpEntry) => {
     setSelected(e);
-    setMsgs((m) => [...m, { id: Date.now().toString(), role: "assistant", text: `**${e.titulo}**`, entries: [] }]);
+    setMsgs((m) => [...m, { id: nextMsgId(), role: "assistant", text: `**${e.titulo}**`, entries: [] }]);
   };
 
   if (!open) {
@@ -198,11 +363,17 @@ export default function HelpAssistant() {
       <header className="flex items-center justify-between border-b border-outline-variant/50 bg-surface-container-low px-3 py-2.5">
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
-            <Sparkles className="h-4 w-4 text-primary" />
+            {iaOnline ? <Sparkles className="h-4 w-4 text-primary" /> : <WifiOff className="h-4 w-4 text-on-surface-variant" />}
           </span>
           <div>
             <p className="font-class-name text-class-name font-bold text-on-surface">Ayuda</p>
-            <p className="font-code-sm text-[11px] text-on-surface-variant">Respuestas locales — sin internet</p>
+            <p className="font-code-sm text-[11px] text-on-surface-variant">
+              {iaOnline === null
+                ? "Comprobando asistente..."
+                : iaOnline
+                  ? "Asistente IA · OpenRouter fuction calling"
+                  : "Respuestas locales — sin internet"}
+            </p>
           </div>
         </div>
         <button onClick={() => setOpen(false)} className="rounded p-1.5 text-on-surface-variant hover:bg-surface-variant" aria-label="Cerrar">
@@ -216,7 +387,8 @@ export default function HelpAssistant() {
             <button
               key={c}
               onClick={() => handleChip(c)}
-              className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 font-code-sm text-[11px] text-primary hover:bg-primary/10"
+              disabled={aiBusy}
+              className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 font-code-sm text-[11px] text-primary hover:bg-primary/10 disabled:opacity-50"
             >
               {c}
             </button>
@@ -230,6 +402,32 @@ export default function HelpAssistant() {
                 <span className="break-words">
                   {m.role === "user" ? m.text : <Inline text={m.text} />}
                 </span>
+
+                {m.projects && m.projects.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    <p className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
+                      ¿De qué proyecto descargo?
+                    </p>
+                    {m.projects.map((p) => (
+                      <button
+                        key={p.proyectoId}
+                        onClick={() => openExportModal({ proyectoId: p.proyectoId, nombre: p.nombre })}
+                        className="flex items-center justify-between rounded border border-outline-variant bg-surface px-2.5 py-2 text-left hover:bg-surface-variant"
+                      >
+                        <span className="font-code-sm text-code-sm font-medium text-on-surface">{p.nombre}</span>
+                        <Download className="h-3.5 w-3.5 text-primary" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {m.notice && (
+                  <p className="mt-2 flex items-center gap-1 font-code-sm text-[11px] text-on-surface-variant">
+                    <WifiOff className="h-3 w-3" />
+                    {m.notice}
+                  </p>
+                )}
+
                 {m.entries && m.entries.length > 0 && (
                   <div className="mt-2 flex flex-col gap-1">
                     {m.entries.map((e) => (
@@ -243,6 +441,15 @@ export default function HelpAssistant() {
               </div>
             </div>
           ))}
+
+          {aiBusy && (
+            <div className="flex items-center gap-2">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10">
+                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+              </span>
+              <span className="font-code-sm text-code-sm text-on-surface-variant">Pensando en OpenRouter...</span>
+            </div>
+          )}
         </div>
 
         {selected && (
@@ -306,11 +513,12 @@ export default function HelpAssistant() {
                 if (e.key === "Escape") setSelected(null);
               }}
               placeholder="Pregunta: cómo creo un proyecto..."
-              className="w-full rounded-full border border-outline-variant bg-surface py-2 pl-8 pr-3 font-body-md text-body-md outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              disabled={aiBusy}
+              className="w-full rounded-full border border-outline-variant bg-surface py-2 pl-8 pr-3 font-body-md text-body-md outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
             />
           </div>
-          <button onClick={handleSend} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-on-primary hover:bg-primary/90" aria-label="Enviar">
-            <Send className="h-4 w-4" />
+          <button onClick={handleSend} disabled={aiBusy || !query.trim()} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-50" aria-label="Enviar">
+            {aiBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
         {selected && (

@@ -52,6 +52,7 @@ next-env.d.ts
 /training_rtx/
 
 /scripts/
+/deploy/
 #dataset
 /dataset
 PLAN_ASISTENTE_IA.md

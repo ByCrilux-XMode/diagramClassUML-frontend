@@ -25,7 +25,12 @@ import type { UmlModelData } from "@/types/uml";
 import { runAgentLoop } from "@/lib/ia/agentLoop";
 import { runVisionImport, VISION_DEFAULT_MODEL } from "@/lib/ia/visionAgentLoop";
 import { SYSTEM_PROMPT } from "@/lib/ia/prompt";
-import { IA_DEFAULT_MODEL, IA_DEFAULT_PROVIDER, IA_VISION_PROVIDER } from "@/lib/ia/config";
+import {
+  IA_DEFAULT_MODEL,
+  IA_DEFAULT_PROVIDER,
+  IA_VISION_PROVIDER,
+  OPENROUTER_DEFAULT_MODEL,
+} from "@/lib/ia/config";
 import { registerDiagram, unregisterDiagram } from "@/lib/editorTools";
 
 interface CreateProjectModalProps {
@@ -238,20 +243,46 @@ export default function CreateProjectModal({
       // mapper determinístico → executeTool. Cero rondas, cero tools inventados.
       // Solo texto → ruta normal qwen-uml con function-calling.
       const userMsg = trimmed || "Genera el diagrama a partir de la imagen adjunta del boceto en papel/pizarra";
-      const result = aiImageBase64
-        ? await runVisionImport({
-            provider: IA_VISION_PROVIDER,
-            model: VISION_DEFAULT_MODEL,
-            images: [aiImageBase64],
-            userMessage: trimmed || undefined,
-          })
-        : await runAgentLoop({
-            provider: IA_DEFAULT_PROVIDER,
-            model: IA_DEFAULT_MODEL || "qwen2.5-coder:7b",
-            systemPrompt: SYSTEM_PROMPT,
-            userMessage: userMsg,
-            hitl: false,
-          });
+      let result;
+      try {
+        result = aiImageBase64
+          ? await runVisionImport({
+              provider: IA_VISION_PROVIDER,
+              model: VISION_DEFAULT_MODEL,
+              images: [aiImageBase64],
+              userMessage: trimmed || undefined,
+            })
+          : await runAgentLoop({
+              provider: IA_DEFAULT_PROVIDER,
+              model: IA_DEFAULT_MODEL || "qwen2.5-coder:7b",
+              systemPrompt: SYSTEM_PROMPT,
+              userMessage: userMsg,
+              hitl: false,
+            });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTunelError =
+          /fetch failed|timeout|aborted|ECONNREFUSED|502|tunel|ollama/i.test(msg) ||
+          IA_DEFAULT_PROVIDER === "ollama" ||
+          IA_DEFAULT_PROVIDER === "hf-space";
+        if (!isTunelError) throw err;
+        // Fallback a OpenRouter con cualquiera de las keys de .env (OPENROUTER_API_KEY* con rotación)
+        setAiTrace("Túnel no responde, reintentando con respaldo OpenRouter...");
+        result = aiImageBase64
+          ? await runVisionImport({
+              provider: "openrouter" as const,
+              model: OPENROUTER_DEFAULT_MODEL,
+              images: [aiImageBase64],
+              userMessage: trimmed || undefined,
+            })
+          : await runAgentLoop({
+              provider: "openrouter" as const,
+              model: OPENROUTER_DEFAULT_MODEL,
+              systemPrompt: SYSTEM_PROMPT,
+              userMessage: userMsg,
+              hitl: false,
+            });
+      }
       const hasTrace = result.trace && result.trace.length > 0;
       if (!hasTrace) {
         throw new Error(
@@ -553,7 +584,8 @@ export default function CreateProjectModal({
                 {aiError && <p className="flex items-center gap-1 font-code-sm text-code-sm text-error"><AlertCircle className="h-3.5 w-3.5" />{aiError}</p>}
                 <div className="mt-1 flex items-center justify-between border-t border-outline-variant pt-2.5">
                   <div className="flex items-center gap-1.5">
-                    <button
+                   {/*
+                   <button
                       onClick={() => {
                         // voz: placeholder
                         setMode("ai");
@@ -563,7 +595,7 @@ export default function CreateProjectModal({
                     >
                       <AudioLines className="h-4 w-4 text-secondary" />
                       <span className="hidden sm:inline">Grabar voz</span>
-                    </button>
+                    </button>*/}
                     <input ref={aiImageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAIImageSelect(f); }} />
                     <button
                       onClick={() => aiImageInputRef.current?.click()}
@@ -589,7 +621,7 @@ export default function CreateProjectModal({
               )}
             </div>
           </div>
-
+          {/*
           <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-outline-variant bg-surface-container-low p-3">
             <div className="flex items-center gap-4 font-code-sm text-code-sm text-on-surface-variant">
               <label className="flex cursor-pointer items-center gap-2">
@@ -607,6 +639,7 @@ export default function CreateProjectModal({
             </div>
             <span className="font-code-sm text-code-sm text-outline">ESTÁNDAR: UML 2.5</span>
           </div>
+           */}
         </div>
 
         {aiGenerating && (

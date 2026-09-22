@@ -159,6 +159,17 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
     diagram.nodeTemplateMap = nodeTemplateMap;
     diagram.linkTemplateMap = linkTemplateMap;
 
+    // Guard: evita crash findObjectAt con NaN (GoJS internos lo llaman con puntos inválidos tras links flotantes)
+    const origFindObjectAt = (diagram as unknown as { findObjectAt: (p: go.Point, ...a: unknown[]) => go.GraphObject | null }).findObjectAt.bind(diagram);
+    (diagram as unknown as { findObjectAt: (p: go.Point, ...a: unknown[]) => go.GraphObject | null }).findObjectAt = (
+      p: go.Point,
+      navig?: unknown,
+      pred?: unknown,
+    ) => {
+      if (!p || typeof p.x !== "number" || typeof p.y !== "number" || !isFinite(p.x) || !isFinite(p.y)) return null;
+      return origFindObjectAt(p, navig as never, pred as never);
+    };
+
     diagram.addDiagramListener("ChangedSelection", (event) => {
       const part = event.diagram.selection.first();
       if (part instanceof go.Node) {
@@ -570,8 +581,11 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
             const diagram = diagramInstance.current;
             if (diagram && diagramRef.current) {
               const rect = diagramRef.current.getBoundingClientRect();
+              if (!isFinite(rect.width) || !isFinite(rect.height) || rect.width === 0) return;
               const viewPt = new go.Point(e.clientX - rect.left, e.clientY - rect.top);
+              if (!isFinite(viewPt.x) || !isFinite(viewPt.y)) return;
               const docPt = diagram.transformViewToDoc(viewPt);
+              if (!isFinite(docPt.x) || !isFinite(docPt.y)) return;
               actualizarCursor(docPt.x, docPt.y);
             }
           }}

@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const provider = raw.provider;
   if (!isValidProvider(provider)) {
     return Response.json(
-      { error: "Provider inválido: usa 'ollama' o 'huggingface'." },
+      { error: "Provider inválido: usa 'ollama', 'hf-space', 'huggingface' u 'openrouter'." },
       { status: 400 }
     );
   }
