@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import type { IAChatMessage } from "@/lib/ia/types";
 import { getAdapter } from "@/lib/ia/adapters";
 import { IA_HELP_MODEL } from "@/lib/ia/config";
+import { guardiaIA } from "@/lib/ia/guardia";
 import {
   buildHelpSystemPrompt,
   parseHelpJson,
@@ -17,6 +18,9 @@ import {
  * Body: { messages: IAChatMessage[], projects?: [{ proyectoId, nombre }] }
  */
 export async function POST(request: NextRequest) {
+  const guardia = await guardiaIA(request, "help");
+  if (!guardia.ok) return guardia.respuesta;
+
   let body: unknown;
   try {
     body = await request.json();
@@ -45,9 +49,13 @@ export async function POST(request: NextRequest) {
         .slice(0, 60)
     : [];
 
+  const pagina =
+    typeof raw.pagina === "string" && raw.pagina.trim() !== ""
+      ? raw.pagina.trim().slice(0, 120)
+      : undefined;
   const system: IAChatMessage = {
     role: "system",
-    content: buildHelpSystemPrompt(projects),
+    content: buildHelpSystemPrompt(projects, pagina),
   };
   const userMessages = (messages as IAChatMessage[]).slice(-8);
 
@@ -86,13 +94,13 @@ export async function POST(request: NextRequest) {
       const msg = err instanceof Error ? err.message : String(err);
       // En OpenRouter solo se reintenta el siguiente modelo ante fallos de modelo/vendor
       if (c.provider === "openrouter" && !/not a valid model ID|401|403|429|Missing Authentication|agentic harnesses|User Safety/i.test(msg)) {
-        console.error("[api/ia/help]", msg);
+        console.error("[api/ia/help]", `usuario=${guardia.usuario.usuarioId}`, msg);
         return Response.json({ error: msg || "El asistente online no está disponible." }, { status: 502 });
       }
-      console.error("[api/ia/help]", `[${c.provider}]`, c.model, msg);
+      console.error("[api/ia/help]", `usuario=${guardia.usuario.usuarioId}`, `[${c.provider}]`, c.model, msg);
     }
   }
   const message = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "El asistente online no está disponible.");
-  console.error("[api/ia/help]", message);
+  console.error("[api/ia/help]", `usuario=${guardia.usuario.usuarioId}`, message);
   return Response.json({ error: message }, { status: 502 });
 }

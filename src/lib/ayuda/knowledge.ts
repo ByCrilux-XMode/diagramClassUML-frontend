@@ -154,7 +154,15 @@ export function searchHelp(query: string, limit = 3): HelpEntry[] {
  */
 export type QuickIntent =
   | { intent: "open_create_modal" }
+  | { intent: "crear_proyecto"; nombre: string }
   | { intent: "download_backend"; projectId?: number; projectName?: string }
+  | {
+      intent: "invitar_colaborador";
+      username: string;
+      rol: "LECTOR" | "EDITOR";
+      projectId?: number;
+      projectName?: string;
+    }
   | { intent: "open_project"; projectId: number; projectName: string };
 
 export function detectQuickIntent(
@@ -177,7 +185,29 @@ export function detectQuickIntent(
     /\b(crea|creame|hazme|haz|nuevo|dame)\b/.test(t) &&
     /\bproyecto\b/.test(t) &&
     !/\b(quiero|quisiera|como|ayuda|explicame|queria)\b/.test(t);
-  if (ordenCrear) return { intent: "open_create_modal" };
+  if (ordenCrear) {
+    // "crea un proyecto llamado veterinaria" → lo crea sin pasar por el modal.
+    const conNombre = raw.match(
+      /\b(?:llamado|de nombre|que se llame)\s+["“']?([\p{L}\p{N}_\-.]+)["”']?/iu,
+    );
+    if (conNombre) return { intent: "crear_proyecto", nombre: conNombre[1] };
+    return { intent: "open_create_modal" };
+  }
+
+  // Invitar/agregar a alguien a un proyecto: "invita a user2 como editor".
+  const ordenInvitar = raw.match(
+    /\b(?:invita|invitar|invitame|anade|anadir|agrega|agregar)\s+(?:a\s+)?@?([\p{L}\p{N}_.-]+)\s+(?:como|de)\s+(lector|editor)/iu,
+  );
+  if (ordenInvitar) {
+    const encontrado = matchProject();
+    return {
+      intent: "invitar_colaborador",
+      username: ordenInvitar[1],
+      rol: ordenInvitar[2].toLowerCase() === "editor" ? "EDITOR" : "LECTOR",
+      projectId: encontrado?.proyectoId,
+      projectName: encontrado?.nombre,
+    };
+  }
 
   // Descargar/exportar: si menciona un proyecto concreto, lo llevamos directo.
   const ordenDescargar =

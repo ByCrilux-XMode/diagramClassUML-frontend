@@ -14,6 +14,19 @@ import {
   crearSocketColaboracion,
   WS_COLABORACION_BASE,
 } from "@/lib/go/colaboracionSocket";
+import { BASE_URL } from "@/lib/api";
+import { ClienteActividad } from "@/lib/actividad/cliente";
+import type { EventoActividad } from "@/lib/actividad/cliente";
+import {
+  capturarEventoReversion,
+  configurarEnvioReversion,
+} from "@/lib/actividad/reversion";
+import { diffEstados } from "@/lib/actividad/diff";
+import { leerEstadoSemantico } from "@/lib/actividad/estado";
+import type { EstadoSemantico } from "@/lib/actividad/estado";
+import { origenActual } from "@/lib/actividad/origen";
+import { construirResumen } from "@/lib/actividad/resumen";
+import { crearSesion } from "@/lib/actividad/sesion";
 
 export type ConexionColaboracion = "conectando" | "conectado" | "desconectado";
 
@@ -39,6 +52,8 @@ export interface EstadoColaboracion {
   synced: boolean;
   usuarios: number;
   remoteUsers: RemoteUser[];
+  /** Se rellena si el servidor rechaza la actividad por permisos. */
+  errorActividad?: string;
 }
 
 const COLORS = [
@@ -59,6 +74,7 @@ export interface UseColaboracionArgs {
   esquemaInicial: Record<string, unknown> | null;
   readOnly: boolean;
   nombreUsuario?: string;
+  usuarioId?: number;
   reAplicarTemplates?: () => void;
   onEstado?: (estado: EstadoColaboracion) => void;
 }
@@ -69,6 +85,7 @@ export function useColaboracion({
   esquemaInicial,
   readOnly,
   nombreUsuario,
+  usuarioId,
   reAplicarTemplates,
   onEstado,
 }: UseColaboracionArgs) {
@@ -90,6 +107,7 @@ export function useColaboracion({
   const esquemaInicialRef = useRef(esquemaInicial);
   const readOnlyRef = useRef(readOnly);
   const nombreUsuarioRef = useRef(nombreUsuario);
+  const usuarioIdRef = useRef(usuarioId);
   const reAplicarTemplatesRef = useRef(reAplicarTemplates);
   const onEstadoRef = useRef(onEstado);
 
@@ -98,6 +116,7 @@ export function useColaboracion({
     esquemaInicialRef.current = esquemaInicial;
     readOnlyRef.current = readOnly;
     nombreUsuarioRef.current = nombreUsuario;
+    usuarioIdRef.current = usuarioId;
     reAplicarTemplatesRef.current = reAplicarTemplates;
     onEstadoRef.current = onEstado;
   });
@@ -127,6 +146,108 @@ export function useColaboracion({
       onEstadoRef.current?.({ ...estadoActual });
     };
 
+    // --- Bitácora de actividad (fase 02) ---
+    const sesion = crearSesion();
+    const clienteActividad = new ClienteActividad({
+      proyectoId,
+      baseUrl: BASE_URL,
+      alPerderPermiso: (mensaje) => publicarEstado({ errorActividad: mensaje }),
+    });
+    // La reversión retiene sus eventos hasta que el lote termina; aquí se
+    // envían (éxito) o se degradan a turno humano normal (fallo a mitad).
+    configurarEnvioReversion(async (eventos) => {
+      for (const evento of eventos) clienteActividad.encolar(evento);
+      await clienteActividad.vaciar(false);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("actividad:evento-propio"));
+      }
+    });
+    let baseline: EstadoSemantico | null = null;
+    const debugActividad = process.env.NEXT_PUBLIC_IA_DEBUG_ACTIVIDAD === "1" || process.env.IA_DEBUG_ACTIVIDAD === "1";
+
+    const registrarTransaccion = () => {
+      if (!escriturasHabilitadas) return;
+      const diagram = obtenerDiagramaRef.current();
+      if (!diagram) return;
+
+      const nuevo = leerEstadoSemantico(diagram);
+      if (!baseline) {
+        baseline = nuevo;
+        return;
+      }
+      const resultado = diffEstados(baseline, nuevo);
+      baseline = nuevo;
+      if (!resultado.tipo || resultado.cambios.length === 0) return;
+
+      const origen = origenActual();
+      const actorHumano = {
+        usuarioId: usuarioIdRef.current ?? null,
+        nombre: nombreUsuarioRef.current || "Usuario",
+      };
+      const ocurridoEn = new Date().toISOString();
+
+      const evento: EventoActividad = origen
+        ? {
+            sesionId: sesion.sesionId,
+            secuencia: sesion.siguienteSecuencia(),
+            actorTipo: "ia",
+            actorUsuarioId: null,
+            actorNombre: "IA",
+            origen: "ia",
+            tipo: resultado.tipo,
+            entidades: resultado.entidades,
+            cambios: resultado.cambios,
+            turnoId: origen.turnoId,
+            modelo: origen.modelo,
+            resumen: construirResumen(resultado, {
+              actorTipo: "ia",
+              actorNombre: "IA",
+              solicitadoPor: origen.solicitadoPor,
+            }),
+            solicitadoPor: origen.solicitadoPor,
+            aprobadoPor:
+              actorHumano.usuarioId !== null
+                ? { usuarioId: actorHumano.usuarioId, nombre: actorHumano.nombre }
+                : null,
+            ocurridoEn,
+          }
+        : {
+            sesionId: sesion.sesionId,
+            secuencia: sesion.siguienteSecuencia(),
+            actorTipo: "humano",
+            actorUsuarioId: actorHumano.usuarioId,
+            actorNombre: actorHumano.nombre,
+            origen: "manual",
+            tipo: resultado.tipo,
+            entidades: resultado.entidades,
+            cambios: resultado.cambios,
+            turnoId: null,
+            modelo: null,
+            resumen: construirResumen(resultado, {
+              actorTipo: "humano",
+              actorNombre: actorHumano.nombre,
+            }),
+            ocurridoEn,
+          };
+
+      if (debugActividad) {
+        console.log("[actividad] evento", evento.tipo, evento.actorNombre, evento.resumen, evento.cambios.length);
+      }
+      // Fase 9: durante una reversión el evento se retiene hasta saber si el
+      // lote completo se aplicó. Si falla a mitad, se envía como turno normal.
+      if (capturarEventoReversion(evento)) return;
+
+      clienteActividad.encolar(evento);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("actividad:evento-propio"));
+      }
+    };
+
+    const nombreTransaccion = (cambio: go.ChangedEvent): string => {
+      const objeto = cambio.object as { name?: unknown } | null;
+      return typeof objeto?.name === "string" ? objeto.name : "";
+    };
+
     const aplicarRemotoALaGoJS = () => {
       const diagram = obtenerDiagramaRef.current();
       if (!diagram) return;
@@ -152,6 +273,9 @@ export function useColaboracion({
           reAplicarTemplatesRef.current?.();
         } finally {
           aplicandoRemoto = false;
+          // Los cambios remotos no se registran, pero sí pasan a formar parte
+          // del baseline: si no, el siguiente cambio local los incluiría.
+          if (escriturasHabilitadas) baseline = leerEstadoSemantico(obtenerDiagramaRef.current());
         }
       } catch {
         // esquema inválido o modelo sin soporte para merge, se ignora
@@ -178,6 +302,10 @@ export function useColaboracion({
       if (aplicandoRemoto) return;
       if (!cambio.isTransactionFinished) return;
       if (!escriturasHabilitadas) return;
+      const transaccion = nombreTransaccion(cambio);
+      if (transaccion === "ghostPreview" || transaccion === "clearGhost") return;
+      // `confirmGhost` sí se registra: es donde la propuesta pasa a existir.
+      registrarTransaccion();
       if (temporizadorEscritura) clearTimeout(temporizadorEscritura);
       temporizadorEscritura = setTimeout(escribirDesdeGoJS, DEBOUNCE_ESCRITURA_MS);
     };
@@ -281,6 +409,8 @@ export function useColaboracion({
         aplicarEsquema(doc, esquemaInicialRef.current, ORIGEN_LOCAL);
       }
       aplicarRemotoALaGoJS();
+      // La carga inicial no se registra: fija la línea base.
+      baseline = leerEstadoSemantico(obtenerDiagramaRef.current());
       publicarEstado({ synced: true });
     });
 
@@ -300,6 +430,8 @@ export function useColaboracion({
 
     return () => {
       destrozado = true;
+      configurarEnvioReversion(null);
+      clienteActividad.detener();
       if (temporizadorEscritura) clearTimeout(temporizadorEscritura);
       if (reintentoModelo) clearTimeout(reintentoModelo);
       if (modeloEscuchado) modeloEscuchado.removeModelChangedListener(manejarModelo);

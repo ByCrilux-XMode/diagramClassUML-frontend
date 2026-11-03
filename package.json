@@ -6,7 +6,9 @@
     "dev": "next dev -p 5173",
     "build": "next build",
     "start": "next start -p 5173",
-    "lint": "eslint"
+    "lint": "eslint",
+    "proveedor-falso": "node test/proveedor-falso.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "axios": "^1.20.0",
@@ -28,6 +30,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.12"
   }
 }

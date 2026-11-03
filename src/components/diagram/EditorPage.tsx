@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Users } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import DiagramEditor from "./DiagramEditor";
 import type { AsistentePanelProps } from "../ia/AsistentePanel";
 import type { GoJSCanvasHandle } from "./GoJSCanvas";
+import ViewDetailsModal from "../projects/ViewDetailsModal";
+import HelpAssistant from "../ayuda/HelpAssistant";
 import { guardarColaboracion, listarMisProyectos, obtenerProyecto } from "@/lib/proyectos";
-import type { Proyecto } from "@/types/proyecto";
+import type { Proyecto, RolProyecto } from "@/types/proyecto";
 import type { EstadoColaboracion } from "@/hooks/useColaboracion";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -36,6 +39,7 @@ export default function EditorPage() {
     usuarios: 1,
     remoteUsers: [],
   });
+  const [colaboradoresAbierto, setColaboradoresAbierto] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -161,6 +165,15 @@ export default function EditorPage() {
               {saving ? "Guardando..." : "Guardar"}
             </button>
           )}
+          <button
+            onClick={() => setColaboradoresAbierto(true)}
+            disabled={loading}
+            className="flex items-center gap-1.5 rounded bg-secondary px-4 py-1.5 font-badge-label text-badge-label font-bold uppercase tracking-wider text-white transition-opacity hover:bg-secondary/90 disabled:opacity-50"
+            title="Gestionar colaboradores del proyecto"
+          >
+            <Users className="h-3.5 w-3.5" />
+            Colaboradores
+          </button>
         </div>
       </header>
       <main className="min-h-0 flex-1 overflow-hidden">
@@ -180,13 +193,32 @@ export default function EditorPage() {
                 proyectoId={id}
                 readOnly={!puedeEditar}
                 nombreUsuario={usuario?.persona?.nombre}
+                usuarioId={usuario?.usuarioId}
                 onEstadoColaboracion={setEstadoColab}
               />
             </div>
-            <AsistentePanel readOnly={!puedeEditar} />
+            <AsistentePanel
+              readOnly={!puedeEditar}
+              proyectoId={id}
+              usuarioId={usuario?.usuarioId}
+              usuarioNombre={usuario?.persona?.nombre}
+              rol={rol}
+            />
           </div>
         )}
       </main>
+
+      <ViewDetailsModal
+        open={colaboradoresAbierto}
+        onClose={() => setColaboradoresAbierto(false)}
+        proyectoId={Number(id)}
+        nombreInicial={proyecto?.nombre ?? ""}
+        rol={(rol as RolProyecto | null) ?? undefined}
+        solo="colaboradores"
+      />
+
+      {/* Chat de ayuda sobre la web (no sobre el diagrama). */}
+      <HelpAssistant desplazado />
     </div>
   );
 }

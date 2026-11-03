@@ -5,24 +5,52 @@ export interface HelpProjectItem {
   nombre: string;
 }
 
+/** Acciones reales sobre la web que el asistente puede pedir al navegador. */
+export type HelpToolName =
+  | "crear_proyecto"
+  | "abrir_proyecto"
+  | "invitar_colaborador"
+  | "abrir_modulo"
+  | "exportar_backend"
+  | "explicar";
+
+export const HELP_TOOL_NAMES: readonly HelpToolName[] = [
+  "crear_proyecto",
+  "abrir_proyecto",
+  "invitar_colaborador",
+  "abrir_modulo",
+  "exportar_backend",
+  "explicar",
+];
+
 export interface HelpAiResult {
-  intent: "open_create_modal" | "open_project" | "download_backend" | "explain";
+  tool: HelpToolName;
+  args: Record<string, unknown>;
   text: string;
   projectId: number | null;
   helpIds: string[];
 }
 
-/** Contrato JSON que el modelo debe devolver (parseado tolerante en el cliente/route). */
-export type HelpJsonShape = HelpAiResult;
+const TOOL_CATALOG = [
+  `- crear_proyecto {"nombre": string} — crea el proyecto y abre su editor. Solo si la persona lo pide como orden ("crea un proyecto llamado veterinaria"). El nombre va sin espacios ni tildes.`,
+  `- abrir_proyecto {"proyectoId": number} — abre en el editor un proyecto de la lista.`,
+  `- invitar_colaborador {"proyectoId": number, "username": string, "rol": "LECTOR" | "EDITOR"} — añade a esa persona al proyecto (solo el creador puede). Nunca lo uses con datos inventados: el username debe venir en el mensaje.`,
+  `- abrir_modulo {"destino": "proyectos" | "configuracion"} — navega a esa sección de la web.`,
+  `- exportar_backend {"proyectoId": number} — abre la descarga del backend Spring Boot del proyecto.`,
+  `- explicar {"helpIds": string[]} — responde una duda usando la base de conocimiento de la web (preguntas, pasos, funciones). Es la opción por defecto.`,
+].join("\n");
 
 /**
- * Prompt de sistema del asistente de /proyectos. Debe devolver UN objeto JSON
- * (sin código ni texto fuera del JSON) para que el cliente pueda ejecutar la
- * intención y además mostrar la respuesta en texto natural.
+ * Prompt del asistente web. Debe devolver UN objeto JSON (sin código ni texto
+ * fuera del JSON) con la herramienta elegida, sus argumentos y la respuesta
+ * visible. El navegador ejecuta la herramienta y muestra el texto.
  */
-export function buildHelpSystemPrompt(projects: HelpProjectItem[]): string {
+export function buildHelpSystemPrompt(
+  projects: HelpProjectItem[],
+  pagina?: string,
+): string {
   const knowledge = HELP_ENTRIES.map(
-    (e) => `- [${e.id}] ${e.titulo} — “${e.pregunta}”`
+    (e) => `- [${e.id}] ${e.titulo} — “${e.pregunta}”`,
   ).join("\n");
 
   const projectList =
@@ -30,33 +58,39 @@ export function buildHelpSystemPrompt(projects: HelpProjectItem[]): string {
       ? projects.map((p) => `- ${p.proyectoId}: ${p.nombre}`).join("\n")
       : "El usuario todavía no tiene proyectos.";
 
-  return `Eres el asistente de ayuda de "/proyectos" (diagramador UML colaborativo). El usuario te escribe en chat y espera una respuesta que su navegador PUEDE ejecutar.
+  return `Eres el **asistente de la web** del diagramador UML colaborativo. Respondes dudas sobre cómo usar la aplicación y, cuando hace falta, ejecutas una acción real del navegador. NUNCA hablas del contenido del diagrama: para eso existen el chat grupal y el privado.
+
+# Página donde está la persona
+${pagina ?? "/proyectos"}
 
 # Proyectos actuales del usuario
 ${projectList}
 
+# Herramientas disponibles
+${TOOL_CATALOG}
+
+# Reglas
+- Una sola herramienta por respuesta, la más específica que corresponda.
+- Si la persona solo pregunta cómo se hace algo, usa \`explicar\` con los ids relevantes de la base de conocimiento.
+- Si pide una acción ("crea…", "abre…", "invita…", "descarga…"), usa la herramienta concreta. En "text" cuenta qué vas a hacer o el resultado esperado.
+- "invitar_colaborador" solo si tienes proyecto y username claros. Si falta el username, no inventes: pide que lo escriba.
+- Si un nombre de proyecto coincide por substring claro con la lista, usa su id; si es ambiguo, deja projectId en null y pide que elija.
+- Nunca inventes ids de proyecto, usuarios ni ids de la base de conocimiento.
+- Responde en español, breve, con markdown ligero (**negrita**, \`codigo\`, listas con "-").
+
 # Base de conocimiento (id — tema)
 ${knowledge}
 
-# Reglas de clasificación
-- Órden directa de crear (p. ej. "crea un proyecto", "nuevo proyecto", "haz un proyecto") → intent "open_create_modal"; la UI abrirá el modal de creación, tu "text" puede saludar y decir qué campo llenar.
-- Pedido de explicación o duda ("quiero crear un proyecto", "como creo un proyecto", "para que sirve X") → intent "explain" con "helpIds" apuntando a los ids de la base de conocimiento relevantes.
-- "descargar/exportar el backend / zip" → intent "download_backend". Si el usuario menciona un proyecto concreto, pon su "projectId" (usa la lista de arriba; si el nombre coincide por substring claro, elígela; si es ambiguo, "projectId": null). En "text" siempre cuenta los pasos de descarga y, si "projectId" es null, lista los proyectos disponibles.
-- "abre/entrar a <proyecto>" → intent "open_project" con el "projectId" correcto.
-- Cualquier otra cosa → "explain".
-
 # Formato de respuesta
-Responde ÚNICAMENTE con un objeto JSON válido, sin markdown, sin texto antes ni después:
-{"intent":"open_create_modal|open_project|download_backend|explain","text":"respuesta breve en español","projectId":number|null,"helpIds":["id_de_knowledge", ...]}
-
-El campo "text" usa markdown ligero: **negrita**, \`codigo\`, listas con "-". Debe ser servicial y conciso.`;
+Responde ÚNICAMENTE con un objeto JSON válido, sin markdown ni texto fuera:
+{"tool":"crear_proyecto|abrir_proyecto|invitar_colaborador|abrir_modulo|exportar_backend|explicar","args":{...},"text":"respuesta breve en español","projectId":number|null,"helpIds":["id_de_knowledge", ...]}`;
 }
 
 /**
- * Parsea el JSON devuelto por el modelo de forma tolerante: aguanta corchetes
- * ```json, texto suelto antes/después y claves con nombres ES. Nunca lanza.
+ * Parsea el JSON del modelo de forma tolerante: aguanta ```json, texto suelto
+ * antes/después y nombres de herramienta desconocidos. Nunca lanza.
  */
-export function parseHelpJson(raw: string): HelpJsonShape {
+export function parseHelpJson(raw: string): HelpAiResult {
   const trimmed = (raw ?? "").trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
   const body = fenced ? fenced[1].trim() : trimmed;
@@ -67,32 +101,56 @@ export function parseHelpJson(raw: string): HelpJsonShape {
   try {
     parsed = JSON.parse(slice);
   } catch {
-    // JSON inválido → responde como explain con el texto crudo
+    // JSON inválido → se responde como explicación con el texto crudo
   }
   if (!parsed || typeof parsed !== "object") {
-    return { intent: "explain", text: trimmed || "No pude procesar la respuesta.", projectId: null, helpIds: [] };
+    return {
+      tool: "explicar",
+      args: {},
+      text: trimmed || "No pude procesar la respuesta.",
+      projectId: null,
+      helpIds: [],
+    };
   }
   const o = parsed as Record<string, unknown>;
-  const intentRaw = String(o.intent ?? "explain") as HelpJsonShape["intent"];
-  const intent: HelpJsonShape["intent"] =
-    intentRaw === "open_create_modal" || intentRaw === "open_project" || intentRaw === "download_backend"
-      ? intentRaw
-      : "explain";
+  const toolRaw = String(o.tool ?? o.herramienta ?? "");
+  const tool = (HELP_TOOL_NAMES as readonly string[]).includes(toolRaw)
+    ? (toolRaw as HelpToolName)
+    : "explicar";
+  const args =
+    o.args && typeof o.args === "object" && !Array.isArray(o.args)
+      ? (o.args as Record<string, unknown>)
+      : {};
   const projectId =
-    typeof o.projectId === "number" ? o.projectId : typeof o.projectId === "string" ? Number(o.projectId) : null;
+    typeof o.projectId === "number"
+      ? o.projectId
+      : typeof o.projectId === "string"
+        ? Number(o.projectId)
+        : null;
   return {
-    intent,
-    text: typeof o.text === "string" && o.text.trim() ? o.text : defaultText(intent),
-    projectId: Number.isFinite(projectId) ? projectId : null,
+    tool,
+    args,
+    text: typeof o.text === "string" && o.text.trim() ? o.text : defaultText(tool),
+    projectId: Number.isFinite(projectId) ? (projectId as number) : null,
     helpIds: Array.isArray(o.helpIds)
       ? o.helpIds.filter((x) => typeof x === "string").map(String)
       : [],
   };
 }
 
-function defaultText(intent: HelpJsonShape["intent"]): string {
-  if (intent === "open_create_modal") return "Perfecto, te abro el modal de **Nuevo Proyecto**.";
-  if (intent === "open_project") return "Te abro el proyecto en el editor.";
-  if (intent === "download_backend") return "Te cuento cómo descargar el backend: abre el proyecto → **Exportar Backend** → **Descargar ZIP**.";
-  return "Te ayudo con eso. Pregúntame por crear proyecto, descargar backend o usar la IA.";
+function defaultText(tool: HelpToolName): string {
+  switch (tool) {
+    case "crear_proyecto":
+      return "Voy a crear el proyecto y abrir su editor.";
+    case "abrir_proyecto":
+      return "Abriendo el proyecto en el editor…";
+    case "invitar_colaborador":
+      return "Voy a añadir a esa persona al proyecto.";
+    case "abrir_modulo":
+      return "Te llevo a esa sección.";
+    case "exportar_backend":
+      return "Abriendo la descarga del backend del proyecto…";
+    default:
+      return "Te ayudo con eso. Pregúntame por crear proyectos, invitar colaboradores o cualquier función de la web.";
+  }
 }

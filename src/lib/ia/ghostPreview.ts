@@ -5,8 +5,8 @@ import { getDiagram } from "@/lib/editorTools";
 import type { PendingProposal } from "@/lib/ia/types";
 import type { AttributeData, MethodData, Visibility } from "@/types/uml";
 
-let ghostNodeKeys = new Set<string>();
-let ghostLinkKeys = new Set<string>();
+const ghostNodeKeys = new Set<string>();
+const ghostLinkKeys = new Set<string>();
 
 function nextGhostLoc(diagram: go.Diagram, index: number): string {
   const vb = diagram.viewportBounds;
@@ -139,15 +139,9 @@ export function showGhostPreview(pending: PendingProposal[]): void {
         };
         model.addLinkData(link);
         ghostLinkKeys.add(linkKey);
-      } else if (p.toolName === "rename") {
-        const rawKey = String((p.args as Record<string, unknown>).key ?? "");
-        const normKey = normalizeKey(rawKey);
-        const node = model.nodeDataArray.find((n) => normalizeKey((n as { key?: unknown }).key) === normKey) as Record<string, unknown> | undefined;
-        if (node) {
-          ghostNodeKeys.add(`rename-${normKey}`);
-        }
       }
-      // otros tools (removeClass, updateAttribute, replaceAll, validate) no necesitan ghost visual
+      // otros tools (removeClass, updateClass, updateRelation, updateAttribute,
+      // updateMethod, replaceAll, getState, validate) no necesitan ghost visual
     }
   } finally {
     diagram.commitTransaction("ghostPreview");
@@ -171,7 +165,6 @@ export function clearGhostPreview(): void {
       if (data) model.removeLinkData(data);
     }
     for (const key of Array.from(ghostNodeKeys)) {
-      if (key.startsWith("rename-")) continue;
       const data = model.nodeDataArray.find((n) => (n as { key?: unknown }).key === key) as Record<string, unknown> | undefined;
       if (data) model.removeNodeData(data);
     }
@@ -203,7 +196,6 @@ export function confirmGhostPreview(): void {
       }
     }
     for (const key of Array.from(ghostNodeKeys)) {
-      if (key.startsWith("rename-")) continue;
       const data = model.nodeDataArray.find((n) => (n as { key?: unknown }).key === key) as Record<string, unknown> | undefined;
       if (data) model.setDataProperty(data, "isGhost", false);
     }

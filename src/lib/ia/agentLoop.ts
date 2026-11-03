@@ -1,61 +1,74 @@
-import { executeTool, getDiagram, validateArgs } from "@/lib/editorTools";
-import type { ToolArgs, ToolName } from "@/lib/editorTools";
-import { buildToolDefs } from "./buildToolDefs";
-import { IA_CHAT_TIMEOUT_MS, IA_MAX_TOOL_ROUNDS } from "./config";
+import {
+  KNOWN_TOOL_NAMES,
+  MOTIVO_NO_OFRECIDA,
+  esEditable,
+  executeTool,
+  executeToolSync,
+  getDiagram,
+  isReadOnlyTool,
+  modoEfectivo,
+  motivoSinEdicion,
+  toolsForMode,
+  validateArgs,
+} from "@/lib/editorTools";
+import type { AmbitoIA, ContextoModo, ModoIA, ToolArgs, ToolName } from "@/lib/editorTools";
+import type { RolProyecto } from "@/types/proyecto";
+import { IA_MAX_TOOL_ROUNDS } from "./config";
 import { applyGridLayout } from "@/lib/go/autoLayout";
+import { withAiOrigin } from "@/lib/actividad/origen";
+import type { OrigenIA } from "@/lib/actividad/origen";
+import { perfilDeProveedor } from "./providers";
+import { chatConFallback } from "./fallback";
+import type { EventoIntento } from "./fallback";
+import type { FallbackRegistrado, TramoProveedor } from "./router";
+import { logContexto, recortarMensajes } from "./context/budget";
+import type { ResultadoRecorte } from "./context/budget";
 import type {
   AgentResult,
+  CapaContexto,
+  ContextoInfo,
+  FallbackIA,
   IAChatMessage,
-  IAChatResponse,
   IAProvider,
   IAToolCall,
   PendingProposal,
+  PersonaIA,
   TurnTrace,
 } from "./types";
 
 export interface AgentLoopParams {
-  provider: IAProvider;
-  model: string;
+  /** Cadena resuelta del turno, con el proveedor preferido primero (D55/D59). */
+  cadena: TramoProveedor[];
   systemPrompt: string;
   userMessage: string;
   history?: IAChatMessage[];
   maxRounds?: number;
   onTurn?: (turn: TurnTrace) => void;
+  /** Un evento por intento de proveedor; sirve para el diagnóstico y la UI. */
+  onIntento?: (evento: EventoIntento) => void;
+  /** Abort provocado por la persona: corta el turno sin fallback. */
+  signal?: AbortSignal;
+  /**
+   * Proponer en lugar de ejecutar. Si no se pasa se deriva del modo: en
+   * `build` con rol de edición se propone (HITL); en `plan` no hace falta
+   * porque el set ya es de solo lectura.
+   */
   hitl?: boolean;
   images?: string[];
-}
-
-interface ProxyBody {
-  provider: IAProvider;
-  model: string;
-  messages: IAChatMessage[];
-  tools: ReturnType<typeof buildToolDefs>;
-}
-
-async function chatViaProxy(body: ProxyBody): Promise<IAChatResponse> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), IA_CHAT_TIMEOUT_MS);
-  try {
-    const res = await fetch("/api/ia/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const data = (await res.json().catch(() => ({}))) as Partial<IAChatResponse> & {
-      error?: string;
-    };
-    if (!res.ok) {
-      throw new Error(data.error ?? `El proxy IA respondió HTTP ${res.status}.`);
-    }
-    return {
-      content: data.content ?? "",
-      toolCalls: Array.isArray(data.toolCalls) ? data.toolCalls : [],
-      model: data.model,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+  /** Quién ve la conversación. Por defecto, `grupo`. */
+  ambito?: AmbitoIA;
+  /** Modo del turno. Por defecto, `plan`. */
+  modo?: ModoIA;
+  /** Rol de quien dispara el turno. `null` o LECTOR nunca editan. */
+  rol?: RolProyecto | null;
+  /** Contexto de atribución para los cambios que ejecuten las tools. */
+  turnoId?: string;
+  solicitadoPor?: PersonaIA;
+  proyectoId?: string | null;
+  /** Tokens y recortes por capa que armó el builder. */
+  contextoCapas?: CapaContexto[];
+  /** Fuentes que el loader no pudo traer; se informan en el resultado. */
+  contextoDegradado?: string[];
 }
 
 function safeParseArgs(args: string | undefined | Record<string, unknown>): unknown {
@@ -75,19 +88,7 @@ function toolResultJson(ok: boolean, data: Record<string, unknown> | undefined, 
   return JSON.stringify({ ok: false, error: error ?? "La herramienta falló." });
 }
 
-const KNOWN_TOOL_NAMES = new Set([
-  "addClass",
-  "removeClass",
-  "rename",
-  "connect",
-  "disconnect",
-  "updateAttribute",
-  "updateMethod",
-  "replaceAll",
-  "validate",
-]);
-
-function extractToolCallsFromContent(content: string): IAToolCall[] {
+export function extractToolCallsFromContent(content: string): IAToolCall[] {
   if (!content || typeof content !== "string") return [];
   const calls: IAToolCall[] = [];
   // También soporta <tool_call>...</tool_call>
@@ -159,47 +160,142 @@ function extractToolCallsFromContent(content: string): IAToolCall[] {
 export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult> {
   const maxRounds = Math.max(1, params.maxRounds ?? IA_MAX_TOOL_ROUNDS);
   const userImages = params.images && params.images.length > 0 ? params.images : undefined;
-  const messages: IAChatMessage[] = [
+  // D37: un solo punto decide qué se le ofrece al modelo.
+  const contextoModo: ContextoModo = {
+    ambito: params.ambito ?? "grupo",
+    modo: params.modo ?? "plan",
+    rol: params.rol ?? null,
+  };
+  const tools = toolsForMode(contextoModo);
+  // D36: el candado de escritura. No depende del set ofrecido: aunque una tool
+  // llegue por el parser de fallback, si el turno no es editable no se ejecuta
+  // ni se propone.
+  const editable = esEditable(contextoModo);
+  const modoTurno = modoEfectivo(contextoModo);
+  let origenActividad: OrigenIA | null =
+    params.turnoId && params.solicitadoPor
+      ? {
+          turnoId: params.turnoId,
+          modelo: "",
+          solicitadoPor: params.solicitadoPor,
+          proyectoId: params.proyectoId ?? null,
+        }
+      : null;
+  let messages: IAChatMessage[] = [
     { role: "system", content: params.systemPrompt },
     ...(params.history ?? []),
     { role: "user", content: params.userMessage, ...(userImages ? { images: userImages } : {}) },
   ];
   const trace: TurnTrace[] = [];
   const pendingProposals: PendingProposal[] = [];
-  const hitl = params.hitl ?? true;
+  const hitl = params.hitl ?? editable;
   let lastContent = "";
+  let bloquesEliminados = 0;
+  let truncados = 0;
+  let ultimoRecorte: ResultadoRecorte | null = null;
+  let proveedorUsado: IAProvider | undefined;
+  let modeloUsado: string | undefined;
+  const fallbacks: FallbackRegistrado[] = [];
+
+  const resultadoBase = () => ({
+    trace,
+    pendingProposals: pendingProposals.length > 0 ? pendingProposals : undefined,
+    hitlRequired: pendingProposals.length > 0,
+    contexto: contexto(),
+    proveedorUsado,
+    modeloUsado,
+    fallbacks: fallbacks.length > 0 ? (fallbacks as FallbackIA[]) : undefined,
+  });
+
+  const contexto = (): ContextoInfo | undefined => {
+    const capas = params.contextoCapas;
+    const degradado = params.contextoDegradado;
+    if (!ultimoRecorte && !capas && !degradado) return undefined;
+    return {
+      bloquesEliminados,
+      truncados,
+      tokensEstimados: ultimoRecorte?.tokensEstimados ?? 0,
+      presupuestoEntrada: ultimoRecorte?.presupuesto.entrada ?? 0,
+      ventana: ultimoRecorte?.presupuesto.ventana ?? 0,
+      aviso:
+        ultimoRecorte && ultimoRecorte.presupuesto.disponible <= 0
+          ? "El system prompt y las herramientas ya consumen todo el presupuesto; no se recortó el system."
+          : undefined,
+      capas,
+      degradado: degradado && degradado.length > 0 ? degradado : undefined,
+    };
+  };
 
   for (let round = 0; round < maxRounds; round++) {
-    const response = await chatViaProxy({
-      provider: params.provider,
-      model: params.model,
-      messages,
-      tools: buildToolDefs(),
+    // D57: el presupuesto se recalcula por intento, con el perfil del tramo.
+    // Un payload que cabe en OpenRouter puede no caber en HF Space.
+    const intento = await chatConFallback<ResultadoRecorte>({
+      cadena: params.cadena,
+      signal: params.signal,
+      onIntento: params.onIntento,
+      preparar: (tramo) => {
+        const recorte = recortarMensajes({
+          messages,
+          tools,
+          systemPrompt: params.systemPrompt,
+          perfil: perfilDeProveedor(tramo.proveedor),
+        });
+        return { messages: recorte.messages, tools, contexto: recorte };
+      },
     });
-    lastContent = response.content ?? "";
 
-    let toolCalls: IAToolCall[] = Array.isArray(response.toolCalls) ? response.toolCalls : [];
+    // El turno continúa con el recorte del tramo que respondió.
+    messages = intento.intento.messages;
+    const recorte = intento.intento.contexto;
+    if (recorte) {
+      bloquesEliminados += recorte.eliminados;
+      truncados += recorte.truncados;
+      ultimoRecorte = recorte;
+      logContexto("turno", recorte, round);
+    }
+    proveedorUsado = intento.proveedorUsado;
+    modeloUsado = intento.modeloUsado;
+    fallbacks.push(...intento.fallbacks);
+    if (origenActividad) origenActividad = { ...origenActividad, modelo: intento.modeloUsado };
+
+    lastContent = intento.content ?? "";
+
+    let toolCalls: IAToolCall[] = Array.isArray(intento.toolCalls) ? intento.toolCalls : [];
     if (toolCalls.length === 0) {
-      const fallback = extractToolCallsFromContent(response.content ?? "");
+      const fallback = extractToolCallsFromContent(intento.content ?? "");
       if (fallback.length > 0) toolCalls = fallback;
     }
     if (toolCalls.length === 0) {
       return {
-        finalContent: response.content,
-        trace,
-        pendingProposals: pendingProposals.length > 0 ? pendingProposals : undefined,
-        hitlRequired: pendingProposals.length > 0,
+        ...resultadoBase(),
+        finalContent: intento.content,
       };
     }
 
     messages.push({
       role: "assistant",
-      content: response.content ?? "",
+      content: intento.content ?? "",
       tool_calls: toolCalls,
     });
 
     for (const call of toolCalls) {
       const name = call.function?.name ?? "";
+      // Candado 1: solo las herramientas ofrecidas en este turno.
+      const ofrecida = tools.some((tool) => tool.function.name === name);
+      // Candado 2: sin modo build no hay escritura, venga de donde venga.
+      const escrituraBloqueada = !editable && !isReadOnlyTool(name);
+      if (!ofrecida || escrituraBloqueada) {
+        const motivo = escrituraBloqueada ? motivoSinEdicion(modoTurno) : MOTIVO_NO_OFRECIDA;
+        trace.push({ round, toolName: name, ok: false, error: motivo });
+        params.onTurn?.(trace[trace.length - 1]);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name,
+          content: toolResultJson(false, undefined, undefined, motivo),
+        });
+        continue;
+      }
       const parsed = safeParseArgs(call.function?.arguments);
       const validation = validateArgs(name as ToolName, parsed);
 
@@ -218,14 +314,19 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult
         });
         continue;
       }
-      //intercepto human in loop
-      if (hitl) {
+      // HITL: las tools de solo lectura (getState, validate) se ejecutan siempre.
+      if (hitl && !isReadOnlyTool(name)) {
         // HITL: no ejecuta, solo propone. Guarda para aprobación humana.
         pendingProposals.push({
           id: call.id,
           toolName: name,
           args: validation.value as unknown as Record<string, unknown>,
           round,
+          turnoId: params.turnoId,
+          proveedor: proveedorUsado,
+          modelo: modeloUsado,
+          solicitadoPor: params.solicitadoPor,
+          proyectoId: params.proyectoId ?? null,
         });
         trace.push({ round, toolName: name, ok: true });
         params.onTurn?.(trace[trace.length - 1]);
@@ -239,7 +340,18 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult
       }
       let result: ToolResultLike;
       try {
-        result = executeTool(name as ToolName, validation.value as ToolArgs);
+        const ctx = { proyectoId: params.proyectoId ?? null };
+        if (isReadOnlyTool(name)) {
+          // D46: las consultas pueden ser asíncronas y se esperan fuera de
+          // `withAiOrigin`. No tocan GoJS, así que no hay transacción humana
+          // que pueda heredar el origen de la IA durante el `await`.
+          result = await executeTool(name as ToolName, validation.value as ToolArgs, ctx);
+        } else {
+          // Las escrituras siguen siendo síncronas: el flag se abre y se cierra
+          // alrededor de una llamada sin `await`. No introducir `await` aquí.
+          const ejecutar = () => executeToolSync(name as ToolName, validation.value as ToolArgs, ctx);
+          result = origenActividad ? withAiOrigin(origenActividad, ejecutar) : ejecutar();
+        }
       } catch (err: unknown) {
         result = {
           ok: false,
@@ -263,13 +375,11 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult
   }
 
   return {
+    ...resultadoBase(),
     finalContent:
       pendingProposals.length > 0
         ? lastContent.trim() || "Propuesta lista para revisión humana."
         : "Se alcanzó el límite de rondas de herramientas y el modelo no entregó una respuesta final. Revisa el trace de abajo o reformula tu pedido.",
-    trace,
-    pendingProposals: pendingProposals.length > 0 ? pendingProposals : undefined,
-    hitlRequired: pendingProposals.length > 0,
   };
 }
 
@@ -290,7 +400,9 @@ export function applyPendingProposals(pending: PendingProposal[]): {
       continue;
     }
     try {
-      const result = executeTool(p.toolName as ToolName, validation.value as ToolArgs);
+      const result = executeToolSync(p.toolName as ToolName, validation.value as ToolArgs, {
+        proyectoId: p.proyectoId ?? null,
+      });
       trace.push({ round: p.round, toolName: p.toolName, ok: result.ok, error: result.ok ? undefined : result.error });
       if (result.ok) applied++;
       else if (result.error) errors.push(result.error);

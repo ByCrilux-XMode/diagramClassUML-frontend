@@ -33,11 +33,12 @@ interface GoJSCanvasProps {
   proyectoId?: string;
   readOnly?: boolean;
   nombreUsuario?: string;
+  usuarioId?: number;
   onEstadoColaboracion?: (estado: EstadoColaboracion) => void;
 }
 
 const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCanvas(
-  { esquemaInicial, proyectoId, readOnly = false, nombreUsuario, onEstadoColaboracion },
+  { esquemaInicial, proyectoId, readOnly = false, nombreUsuario, usuarioId, onEstadoColaboracion },
   ref
 ) {
   const diagramRef = useRef<HTMLDivElement>(null);
@@ -85,6 +86,7 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
     esquemaInicial: esquemaInicial ?? null,
     readOnly,
     nombreUsuario,
+    usuarioId,
     reAplicarTemplates: () => {
       const diagram = diagramInstance.current;
       if (!diagram) return;

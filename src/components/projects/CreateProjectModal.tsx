@@ -23,18 +23,18 @@ import type { Proyecto } from "@/types/proyecto";
 import { parseEAXml } from "@/lib/xmi/ea";
 import type { UmlModelData } from "@/types/uml";
 import { runAgentLoop } from "@/lib/ia/agentLoop";
+import { resolverCadena } from "@/lib/ia/router";
 import { runVisionImport, VISION_DEFAULT_MODEL } from "@/lib/ia/visionAgentLoop";
-import { SYSTEM_PROMPT } from "@/lib/ia/prompt";
+import { buildSystemPrompt } from "@/lib/ia/prompt";
 import {
   HF_USE_ROUTER,
-  IA_DEFAULT_MODEL,
   IA_DEFAULT_PROVIDER,
   IA_VISION_HF_MODEL,
   IA_VISION_PROVIDER,
   OPENROUTER_DEFAULT_MODEL,
   OPENROUTER_MODELS,
 } from "@/lib/ia/config";
-import { registerDiagram, unregisterDiagram } from "@/lib/editorTools";
+import { readDiagramSnapshot, registerDiagram, unregisterDiagram } from "@/lib/editorTools";
 
 interface CreateProjectModalProps {
   open: boolean;
@@ -256,10 +256,16 @@ export default function CreateProjectModal({
               userMessage: trimmed || undefined,
             })
           : await runAgentLoop({
-              provider: IA_DEFAULT_PROVIDER,
-              model: IA_DEFAULT_MODEL || "qwen2.5-coder:7b",
-              systemPrompt: SYSTEM_PROMPT,
+              // Fase 8: la cadena de edición (OpenRouter → HF Space) reemplaza
+              // al proveedor fijo. El fallback interno ya cubre un tramo caído.
+              cadena: resolverCadena({ tarea: "edicion" }),
+              systemPrompt: buildSystemPrompt(readDiagramSnapshot()),
               userMessage: userMsg,
+              // Generación de un diagrama nuevo: build sin HITL, porque aún no
+              // hay proyecto compartido ni a quién atribuir una aprobación.
+              ambito: "grupo",
+              modo: "build",
+              rol: "CREADOR",
               hitl: false,
             });
       } catch (err: unknown) {
@@ -303,10 +309,12 @@ export default function CreateProjectModal({
                   userMessage: trimmed || undefined,
                 })
               : await runAgentLoop({
-                  provider: c.provider,
-                  model: c.model,
-                  systemPrompt: SYSTEM_PROMPT,
+                  cadena: [{ proveedor: c.provider, modelo: c.model }],
+                  systemPrompt: buildSystemPrompt(readDiagramSnapshot()),
                   userMessage: userMsg,
+                  ambito: "grupo",
+                  modo: "build",
+                  rol: "CREADOR",
                   hitl: false,
                 });
             // Si es visión y no generó nada (User Safety: safe / JSON inválido), prueba siguiente modelo

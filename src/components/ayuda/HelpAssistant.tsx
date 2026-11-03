@@ -6,6 +6,13 @@ import { HelpCircle, Search, Send, X, Sparkles, ChevronRight, Loader2, Download,
 import { HELP_ENTRIES, searchHelp, detectQuickIntent, type HelpEntry, type QuickIntent } from "@/lib/ayuda/knowledge";
 import { useHelpActions } from "@/lib/helpActions";
 import { useAuth, type ProyectoItem } from "@/hooks/useAuth";
+import { crearProyecto, listarMisProyectos } from "@/lib/proyectos";
+import {
+  agregarColaborador,
+  buscarUsuarioPorUsername,
+  listarPermisos,
+} from "@/lib/colaboradores";
+import type { HelpAiResult } from "@/lib/ia/helpPrompt";
 
 type Msg = {
   id: string;
@@ -14,15 +21,9 @@ type Msg = {
   entries?: HelpEntry[];
   projects?: ProyectoItem[];
   notice?: string;
+  /** Acción pendiente que se completa al elegir un proyecto de la lista. */
+  action?: { tipo: "invitar"; username: string; rol: "LECTOR" | "EDITOR" };
 };
-
-interface HelpAiPayload {
-  intent: "open_create_modal" | "open_project" | "download_backend" | "explain";
-  text: string;
-  projectId: number | null;
-  helpIds: string[];
-  keyFallbacksUsed?: number;
-}
 
 let msgSeq = 0;
 function nextMsgId(): string {
@@ -144,11 +145,13 @@ function HelpMarkdown({ text }: { text: string }) {
   );
 }
 
-export default function HelpAssistant() {
+export default function HelpAssistant({ desplazado = false }: { desplazado?: boolean }) {
   const router = useRouter();
   const openCreateModal = useHelpActions((s) => s.openCreateModal);
   const openExportModal = useHelpActions((s) => s.openExportModal);
   const proyectos = useAuth((s) => s.proyectos);
+  const setProyectos = useAuth((s) => s.setProyectos);
+  const bumpRefresh = useAuth((s) => s.bumpRefresh);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -156,13 +159,36 @@ export default function HelpAssistant() {
     {
       id: "welcome",
       role: "assistant",
-      text: "¡Hola! Soy tu asistente de **/proyectos**. Dime cosas como **\"crea un proyecto\"** (lo abro al instante), **\"quiero crear un proyecto\"**, **\"cómo descargo el backend\"** o **\"abre veterinaria\"**. También puedes tocar un atajo o buscar un tema.",
+      text: "¡Hola! Soy el asistente de la **web**. Puedo explicarte cómo funciona la aplicación y ejecutar acciones: **\"crea un proyecto veterinaria\"**, **\"invita a user2 como editor\"**, **\"abre veterinaria\"**, **\"descarga el backend\"**. No hablo del contenido del diagrama: para eso están el chat grupal y el privado del editor.",
     },
   ]);
   const [selected, setSelected] = useState<HelpEntry | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [iaOnline, setIaOnline] = useState<boolean | null>(null);
+  const [locales, setLocales] = useState<ProyectoItem[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // En el editor la lista del store puede venir vacía: se pide al abrir para
+  // que las herramientas (abrir proyecto, invitar colaborador) tengan datos.
+  useEffect(() => {
+    if (!open || proyectos.length > 0) return;
+    let cancelado = false;
+    void listarMisProyectos(1, 100)
+      .then(({ datos }) => {
+        if (cancelado) return;
+        const lista = datos.map((p) => ({ proyectoId: p.proyectoId, nombre: p.nombre }));
+        setLocales(lista);
+        setProyectos(lista);
+      })
+      .catch(() => {
+        // sin lista el asistente sigue respondiendo la guía
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [open, proyectos.length, setProyectos]);
+
+  const disponibles = proyectos.length > 0 ? proyectos : locales;
 
   const chips = useMemo(() => {
     const all = HELP_ENTRIES.flatMap((e) => e.atajos ?? []);
@@ -194,6 +220,22 @@ export default function HelpAssistant() {
 
   // ─── Intención local (rápida y determinista) ────────────────────────────
   const ejecutarQuickIntent = (q: QuickIntent) => {
+    if (q.intent === "crear_proyecto") {
+      void crearProyectoDesdeAsistente(q.nombre);
+      return;
+    }
+    if (q.intent === "invitar_colaborador") {
+      if (!q.projectId) {
+        pushAssistant({
+          text: `¿En qué proyecto quieres invitar a **${q.username}** como ${q.rol === "EDITOR" ? "Editor" : "Lector"}?`,
+          projects: disponibles.length > 0 ? disponibles : undefined,
+          action: { tipo: "invitar", username: q.username, rol: q.rol },
+        });
+        return;
+      }
+      void invitarColaborador(q.projectId, q.username, q.rol);
+      return;
+    }
     if (q.intent === "open_create_modal") {
       openCreateModal();
       pushAssistant({
@@ -203,7 +245,7 @@ export default function HelpAssistant() {
       return;
     }
     if (q.intent === "download_backend") {
-      if (q.projectId && proyectos.some((p) => p.proyectoId === q.projectId)) {
+      if (q.projectId && disponibles.some((p) => p.proyectoId === q.projectId)) {
         openExportModal({ proyectoId: q.projectId, nombre: q.projectName ?? "" });
         pushAssistant({
           text: `Te abrí la **descarga del backend** de \`${q.projectName}\`.\nRevisa el preview (entidades/FK) y pulsa **Descargar ZIP**.`,
@@ -227,44 +269,150 @@ export default function HelpAssistant() {
     const top = HELP_ENTRIES.find((e) => e.id === "exportar-backend");
     pushAssistant({
       text: `Voy a ayudarte con la **descarga del backend**. Este es el camino:\n${top?.respuesta ?? ""}\nY si quieres, dímelo concreto (*\"descarga veterinaria\"*) o elige abajo de qué proyecto te abro la descarga directa:`,
-      entries: proyectos.length > 0 ? undefined : [],
-      projects: proyectos.length > 0 ? proyectos : undefined,
+      entries: disponibles.length > 0 ? undefined : [],
+      projects: disponibles.length > 0 ? disponibles : undefined,
     });
   };
 
-  // ─── Intención devuelta por la IA (OpenRouter) ──────────────────────────
-  const ejecutarAiIntent = (data: HelpAiPayload) => {
-    const entries = entriesFromIds(data.helpIds ?? []);
+  // ─── Herramientas de la web (respuesta de la IA) ────────────────────────
+  const numeroDe = (valor: unknown): number | null => {
+    const n = Number(valor);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  };
 
-    if (data.intent === "open_create_modal") {
-      openCreateModal();
-      pushAssistant({ text: data.text || "Te abro el modal de **Nuevo Proyecto**.", entries });
+  const proyectoPorIdONombre = (
+    id: unknown,
+    nombre: unknown,
+  ): ProyectoItem | undefined => {
+    const numero = numeroDe(id);
+    if (numero !== null) {
+      const porId = disponibles.find((p) => p.proyectoId === numero);
+      if (porId) return porId;
+    }
+    const buscado = typeof nombre === "string" ? nombre.trim().toLowerCase() : "";
+    if (buscado === "") return undefined;
+    return (
+      disponibles.find((p) => p.nombre.toLowerCase() === buscado) ??
+      disponibles.find((p) => p.nombre.toLowerCase().includes(buscado))
+    );
+  };
+
+  const crearProyectoDesdeAsistente = async (nombre: string, texto?: string) => {
+    const limpio = nombre.trim();
+    if (!limpio) {
+      pushAssistant({ text: "¿Cómo quieres llamar al proyecto? Dímelo y lo creo al instante." });
       return;
     }
-    if (data.intent === "download_backend") {
-      const objetivo =
-        data.projectId !== null
-          ? proyectos.find((p) => p.proyectoId === data.projectId)
-          : undefined;
+    try {
+      const proyecto = await crearProyecto({ nombre: limpio });
+      bumpRefresh?.();
+      pushAssistant({
+        text: `${texto ? `${texto}\n\n` : ""}Proyecto **${proyecto.nombre}** creado (ID ${proyecto.proyectoId}). Abriendo su editor…`,
+      });
+      router.push(`/editor/${proyecto.proyectoId}`);
+    } catch (err: unknown) {
+      const s = (err as { response?: { status?: number } })?.response?.status;
+      pushAssistant({
+        text:
+          s === 401
+            ? "Tu sesión expiró. Vuelve a iniciar sesión para crear el proyecto."
+            : "No se pudo crear el proyecto.",
+      });
+    }
+  };
+
+  const invitarColaborador = async (
+    proyectoId: number,
+    username: string,
+    rol: "LECTOR" | "EDITOR",
+  ) => {
+    const proyecto = disponibles.find((p) => p.proyectoId === proyectoId);
+    try {
+      const usuario = await buscarUsuarioPorUsername(username);
+      const permisos = await listarPermisos();
+      const permiso =
+        permisos.find((p) => p.nombre === rol) ?? permisos.find((p) => p.nombre === "LECTOR");
+      if (!permiso) throw new Error("No se pudo resolver el permiso");
+      await agregarColaborador(proyectoId, {
+        usuarioId: usuario.usuarioId,
+        permisoId: permiso.permisoId,
+      });
+      pushAssistant({
+        text: `**${usuario.username}** ahora es ${rol === "EDITOR" ? "**Editor**" : "**Lector**"} de **${proyecto?.nombre ?? `proyecto ${proyectoId}`}**.`,
+      });
+    } catch (err: unknown) {
+      const s = (err as { response?: { status?: number } })?.response?.status;
+      let m = "No se pudo invitar al colaborador.";
+      if (s === 404) m = `No encontré al usuario **${username}**.`;
+      else if (s === 403) m = "Solo el creador del proyecto puede añadir colaboradores.";
+      else if (s === 409) m = `**${username}** ya es colaborador de ese proyecto.`;
+      pushAssistant({ text: m });
+    }
+  };
+
+  const ejecutarHerramienta = async (data: HelpAiResult) => {
+    const entries = entriesFromIds(data.helpIds ?? []);
+    const args = data.args ?? {};
+
+    if (data.tool === "crear_proyecto") {
+      await crearProyectoDesdeAsistente(String(args.nombre ?? ""), data.text);
+      return;
+    }
+
+    if (data.tool === "abrir_proyecto") {
+      const objetivo = proyectoPorIdONombre(args.proyectoId ?? data.projectId, args.nombre);
+      if (!objetivo) {
+        pushAssistant({
+          text: `${data.text}\n\nDime cuál de tus proyectos abro:`,
+          projects: disponibles.length > 0 ? disponibles : undefined,
+          entries,
+        });
+        return;
+      }
+      pushAssistant({ text: data.text || `Abriendo **${objetivo.nombre}**…`, entries });
+      router.push(`/editor/${objetivo.proyectoId}`);
+      return;
+    }
+
+    if (data.tool === "invitar_colaborador") {
+      const username = String(args.username ?? "").trim().replace(/^@/, "");
+      const rol: "LECTOR" | "EDITOR" = args.rol === "EDITOR" ? "EDITOR" : "LECTOR";
+      const proyecto = proyectoPorIdONombre(args.proyectoId ?? data.projectId, args.proyecto);
+      if (!username || !proyecto) {
+        pushAssistant({
+          text: `${data.text}\n\n${username ? "Me falta el proyecto" : "Me falta el nombre de usuario"}${proyecto ? "" : " (elige uno abajo)"}.`,
+          projects: proyecto ? undefined : disponibles.length > 0 ? disponibles : undefined,
+          action: username ? { tipo: "invitar", username, rol } : undefined,
+        });
+        return;
+      }
+      await invitarColaborador(proyecto.proyectoId, username, rol);
+      return;
+    }
+
+    if (data.tool === "abrir_modulo") {
+      const destino = String(args.destino ?? "proyectos");
+      const href = destino === "configuracion" ? "/proyectos/configuracion" : "/proyectos";
+      pushAssistant({ text: data.text || "Te llevo a esa sección." });
+      router.push(href);
+      return;
+    }
+
+    if (data.tool === "exportar_backend") {
+      const objetivo = proyectoPorIdONombre(args.proyectoId ?? data.projectId, args.nombre);
       if (objetivo) {
         openExportModal({ proyectoId: objetivo.proyectoId, nombre: objetivo.nombre });
-        pushAssistant({ text: data.text || `Te abro la descarga de \`${objetivo.nombre}\`.`, entries });
+        pushAssistant({
+          text: data.text || `Te abro la descarga de \`${objetivo.nombre}\`.`,
+          entries,
+        });
       } else {
         respuestaDescargaSinDestino();
       }
       return;
     }
-    if (data.intent === "open_project") {
-      const objetivo = proyectos.find((p) => p.proyectoId === data.projectId);
-      if (objetivo) {
-        router.push(`/editor/${objetivo.proyectoId}`);
-        pushAssistant({ text: data.text || `Abriendo **${objetivo.nombre}**...`, entries });
-      } else {
-        pushAssistant({ text: data.text || "Selecciona un proyecto para abrir.", entries });
-      }
-      return;
-    }
-    // explain
+
+    // explicar (por defecto)
     pushAssistant({ text: data.text || "Te cuento cómo hacerlo.", entries });
   };
 
@@ -295,7 +443,7 @@ export default function HelpAssistant() {
     setMsgs((m) => [...m, { id: nextMsgId(), role: "user", text }]);
 
     // 1) Órdenes fuertes y deterministas: respuesta al instante, sin red.
-    const quick = detectQuickIntent(text, proyectos);
+    const quick = detectQuickIntent(text, disponibles);
     if (quick) {
       ejecutarQuickIntent(quick);
       return;
@@ -309,13 +457,17 @@ export default function HelpAssistant() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [{ role: "user", content: text }],
-          projects: proyectos,
+          projects: disponibles,
+          pagina: window.location.pathname,
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as Partial<HelpAiPayload> & { error?: string };
+      const data = (await res.json().catch(() => ({}))) as Partial<HelpAiResult> & {
+        error?: string;
+      };
       if (!res.ok) throw new Error(data.error ?? "No disponible.");
-      ejecutarAiIntent({
-        intent: data.intent ?? "explain",
+      await ejecutarHerramienta({
+        tool: data.tool ?? "explicar",
+        args: data.args ?? {},
         text: data.text ?? "",
         projectId: data.projectId ?? null,
         helpIds: data.helpIds ?? [],
@@ -348,8 +500,7 @@ export default function HelpAssistant() {
   if (!open) {
     return (
       <button
-        onClick={() => setOpen(true)}
-        className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-full border border-outline-variant bg-primary px-4 py-3 text-on-primary shadow-[0_4px_16px_rgba(0,0,0,0.18)] hover:bg-primary/90"
+        onClick={() => setOpen(true)}          className={`fixed bottom-5 z-50 flex items-center gap-2 rounded-full border border-outline-variant bg-primary px-4 py-3 text-on-primary shadow-[0_4px_16px_rgba(0,0,0,0.18)] hover:bg-primary/90 ${desplazado ? "right-5 lg:right-[356px]" : "right-5"}`}
         aria-label="Abrir ayuda"
       >
         <HelpCircle className="h-5 w-5" />
@@ -359,7 +510,9 @@ export default function HelpAssistant() {
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex h-[min(72vh,560px)] w-[min(92vw,380px)] flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-[0_8px_32px_rgba(0,0,0,0.22)]">
+    <div
+      className={`fixed bottom-5 z-50 flex h-[min(72vh,560px)] w-[min(92vw,380px)] flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-[0_8px_32px_rgba(0,0,0,0.22)] ${desplazado ? "right-5 lg:right-[356px]" : "right-5"}`}
+    >
       <header className="flex items-center justify-between border-b border-outline-variant/50 bg-surface-container-low px-3 py-2.5">
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
@@ -411,7 +564,17 @@ export default function HelpAssistant() {
                     {m.projects.map((p) => (
                       <button
                         key={p.proyectoId}
-                        onClick={() => openExportModal({ proyectoId: p.proyectoId, nombre: p.nombre })}
+                        onClick={() => {
+                          if (m.action?.tipo === "invitar") {
+                            void invitarColaborador(
+                              p.proyectoId,
+                              m.action.username,
+                              m.action.rol,
+                            );
+                            return;
+                          }
+                          openExportModal({ proyectoId: p.proyectoId, nombre: p.nombre });
+                        }}
                         className="flex items-center justify-between rounded border border-outline-variant bg-surface px-2.5 py-2 text-left hover:bg-surface-variant"
                       >
                         <span className="font-code-sm text-code-sm font-medium text-on-surface">{p.nombre}</span>

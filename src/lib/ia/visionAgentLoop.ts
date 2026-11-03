@@ -32,7 +32,7 @@ import { VISION_SYSTEM_PROMPT, VISION_DEFAULT_MODEL } from "./visionSystemPrompt
 export { VISION_DEFAULT_MODEL };
 import { VISION_OUTPUT_SCHEMA, validateCrossReferences, normalizeVisionKeys } from "./visionSchema";
 import { visionSchemaToToolCalls } from "./visionSchemaToToolCalls";
-import { validateArgs, executeTool } from "@/lib/editorTools";
+import { validateArgs, executeToolSync } from "@/lib/editorTools";
 
 export interface RunVisionParams {
   provider: IAProvider;
@@ -138,7 +138,7 @@ export async function runVisionImport(params: RunVisionParams): Promise<RunVisio
       warnings.push(msg);
       continue;
     }
-    const result = executeTool(name as never, validation.value as never);
+    const result = executeToolSync(name as never, validation.value as never, { proyectoId: null });
     trace.push({
       round: 1,
       toolName: name,

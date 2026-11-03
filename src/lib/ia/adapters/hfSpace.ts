@@ -4,6 +4,7 @@ import type {
   IAChatRequestBody,
   IAChatResponse,
   IAToolCall,
+  IAToolDef,
 } from "@/lib/ia/types";
 
 // HF Space (deploy/hf-space) expone POST /generate {mensajes, temperatura, top_p, max_tokens} -> {texto}
@@ -32,107 +33,149 @@ function toJsonArgs(v: unknown): string {
   }
 }
 
-// Extrae tool_calls de un texto que puede venir como:
-// - ```json {"tool_calls":[...] }``` (DSL del LoRA)
-// - "Lo siento... {\"name\":\"addClass\",...}" (apology + JSON)
-// - {"tool_calls":[...]} plano
-// - "Clase: Usuario\nAtributos:\n- nombre: String" (fallback simple, no tool_call)
-// Devuelve [] si no hay JSON parseable.
-function parseTextoToToolCalls(texto: string): IAToolCall[] {
+interface MensajePlano {
+  role: string;
+  content: string;
+}
+
+/**
+ * Algunos Spaces solo aceptan `{mensajes, temperatura, top_p, max_tokens}` e
+ * ignoran el campo `tools`. Para que el modelo sepa qué herramientas existen,
+ * el catálogo viaja dentro del system prompt y se le pide un JSON reconocible.
+ */
+export function mensajesConHerramientas(
+  mensajes: MensajePlano[],
+  tools: IAToolDef[],
+): MensajePlano[] {
+  if (tools.length === 0) return mensajes;
+
+  const catalogo = tools.map((tool) => JSON.stringify(tool.function)).join("\n");
+  const instruccion = [
+    "Herramientas disponibles (una por línea, con sus parámetros):",
+    catalogo,
+    "",
+    "Cuando la persona pida crear, modificar o eliminar algo del diagrama, responde SOLO con este bloque, sin explicaciones:",
+    "```json",
+    '{"tool_calls":[{"name":"<herramienta>","arguments":{...}}]}',
+    "```",
+    "Usa exactamente los nombres y campos del catálogo y las claves de clases que aparecen en el contexto. No inventes claves ni nombres de herramientas. Si solo te hacen una pregunta, responde en texto normal.",
+  ].join("\n");
+
+  const indiceSistema = mensajes.findIndex((mensaje) => mensaje.role === "system");
+  if (indiceSistema === -1) {
+    return [{ role: "system", content: instruccion }, ...mensajes];
+  }
+  return mensajes.map((mensaje, indice) =>
+    indice === indiceSistema
+      ? { ...mensaje, content: `${mensaje.content}\n\n${instruccion}` }
+      : mensaje,
+  );
+}
+
+function llamadaDesdeObjeto(valor: unknown, indice: number): IAToolCall | null {
+  if (typeof valor !== "object" || valor === null) return null;
+  const objeto = valor as Record<string, unknown>;
+  const funcion = (
+    typeof objeto.function === "object" && objeto.function !== null ? objeto.function : objeto
+  ) as Record<string, unknown>;
+  const name = String(funcion.name ?? objeto.name ?? "").trim();
+  if (!name) return null;
+  const args = funcion.arguments ?? funcion.args ?? objeto.arguments ?? objeto.args ?? {};
+  return {
+    id: String(objeto.id ?? `call-${Date.now()}-${indice}`),
+    type: "function",
+    function: { name, arguments: toJsonArgs(args) },
+  };
+}
+
+function llamadasDeArreglo(valor: unknown): IAToolCall[] {
+  if (!Array.isArray(valor)) return [];
+  return valor
+    .map((item, indice) => llamadaDesdeObjeto(item, indice))
+    .filter((llamada): llamada is IAToolCall => llamada !== null);
+}
+
+function llamadasDeJson(texto: string): IAToolCall[] {
+  try {
+    const parsed: unknown = JSON.parse(texto);
+    if (typeof parsed !== "object" || parsed === null) return [];
+    const objeto = parsed as Record<string, unknown>;
+    const toolCalls = objeto.tool_calls ?? objeto.toolCalls;
+    if (Array.isArray(toolCalls)) return llamadasDeArreglo(toolCalls);
+    const unica = llamadaDesdeObjeto(objeto, 0);
+    return unica ? [unica] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Extrae objetos JSON balanceados de un texto (ignora llaves dentro de cadenas). */
+function objetosJson(texto: string): string[] {
+  const objetos: string[] = [];
+  let indice = 0;
+  while (indice < texto.length) {
+    const inicio = texto.indexOf("{", indice);
+    if (inicio === -1) break;
+    let profundidad = 0;
+    let fin = -1;
+    let enCadena = false;
+    let escape = false;
+    for (let i = inicio; i < texto.length; i++) {
+      const caracter = texto[i];
+      if (enCadena) {
+        if (escape) escape = false;
+        else if (caracter === "\\") escape = true;
+        else if (caracter === '"') enCadena = false;
+        continue;
+      }
+      if (caracter === '"') enCadena = true;
+      else if (caracter === "{") profundidad++;
+      else if (caracter === "}") {
+        profundidad--;
+        if (profundidad === 0) {
+          fin = i;
+          break;
+        }
+      }
+    }
+    if (fin === -1) break;
+    objetos.push(texto.slice(inicio, fin + 1));
+    indice = fin + 1;
+  }
+  return objetos;
+}
+
+function deduplicar(llamadas: IAToolCall[]): IAToolCall[] {
+  const vistas = new Set<string>();
+  return llamadas.filter((llamada) => {
+    const clave = `${llamada.function.name}|${llamada.function.arguments}`;
+    if (vistas.has(clave)) return false;
+    vistas.add(clave);
+    return true;
+  });
+}
+
+/**
+ * El Space puede devolver tool calls como JSON, en un bloque ```json, o en un
+ * `<tool_calls>` con varios objetos separados por saltos de línea. Se aceptan
+ * todos esos formatos y se conservan todas las llamadas, no solo la primera.
+ */
+export function parseTextoToToolCalls(texto: string): IAToolCall[] {
   const raw = (texto ?? "").trim();
   if (!raw) return [];
 
-  // 1) bloque ```json ... ``` o ``` ... ```
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) {
-    try {
-      const parsed = JSON.parse(fence[1].trim()) as Record<string, unknown>;
-      const tcs = parsed.tool_calls ?? parsed.toolCalls;
-      if (Array.isArray(tcs)) {
-        return (tcs as Array<Record<string, unknown>>).map((tc, i) => {
-          const fn = (tc.function ?? tc) as Record<string, unknown>;
-          const name = String(fn.name ?? tc.name ?? "");
-          const args = (fn.arguments ?? fn.args ?? tc.arguments ?? {}) as unknown;
-          return {
-            id: String((tc as Record<string, unknown>).id ?? `call-${Date.now()}-${i}`),
-            type: "function" as const,
-            function: { name, arguments: toJsonArgs(args) },
-          };
-        });
-      }
-      if (typeof parsed.name === "string") {
-        const args = (parsed as Record<string, unknown>).args ?? (parsed as Record<string, unknown>).arguments;
-        return [{ id: `call-${Date.now()}-0`, type: "function", function: { name: String(parsed.name), arguments: toJsonArgs(args) } }];
-      }
-    } catch {
-      // fence no era JSON válido, seguir al siguiente intento
-    }
+  // 1) Bloque de código: suele envolver {"tool_calls":[...]} o un arreglo.
+  for (const bloque of raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    const encontradas = llamadasDeJson(bloque[1].trim());
+    if (encontradas.length > 0) return encontradas;
   }
 
-  // 2) busca el primer JSON que contenga "name" o "tool_calls" en cualquier parte del texto
-  // (cubre "Lo siento... {\"name\":\"addClass\",...}")
-  const idxName = raw.indexOf('"name"');
-  const idxTools = raw.indexOf('"tool_calls"');
-  let pos = -1;
-  if (idxName !== -1 && idxTools !== -1) pos = Math.min(idxName, idxTools);
-  else if (idxName !== -1) pos = idxName;
-  else if (idxTools !== -1) pos = idxTools;
-  if (pos !== -1) {
-    const braceStart = raw.lastIndexOf("{", pos);
-    if (braceStart !== -1) {
-      let depth = 0;
-      let end = -1;
-      for (let i = braceStart; i < raw.length; i++) {
-        const ch = raw[i];
-        if (ch === "{") depth++;
-        else if (ch === "}") {
-          depth--;
-          if (depth === 0) { end = i; break; }
-        }
-      }
-      if (end !== -1) {
-        try {
-          const parsed = JSON.parse(raw.slice(braceStart, end + 1)) as Record<string, unknown>;
-          const tcs = parsed.tool_calls ?? parsed.toolCalls;
-          if (Array.isArray(tcs)) {
-            return (tcs as Array<Record<string, unknown>>).map((tc, i) => {
-              const fn = (tc.function ?? tc) as Record<string, unknown>;
-              const name = String(fn.name ?? tc.name ?? "");
-              const args = (fn.arguments ?? fn.args ?? tc.arguments ?? {}) as unknown;
-              return { id: String((tc as Record<string, unknown>).id ?? `call-${Date.now()}-${i}`), type: "function" as const, function: { name, arguments: toJsonArgs(args) } };
-            });
-          }
-          if (typeof parsed.name === "string") {
-            const args = (parsed as Record<string, unknown>).args ?? (parsed as Record<string, unknown>).arguments;
-            return [{ id: `call-${Date.now()}-0`, type: "function", function: { name: String(parsed.name), arguments: toJsonArgs(args) } }];
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
+  // 2) Todo el texto como JSON.
+  const directas = llamadasDeJson(raw);
+  if (directas.length > 0) return directas;
 
-  // 3) intenta parsear todo el raw como JSON directo
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const tcs = parsed.tool_calls ?? parsed.toolCalls;
-    if (Array.isArray(tcs)) {
-      return (tcs as Array<Record<string, unknown>>).map((tc, i) => {
-        const fn = (tc.function ?? tc) as Record<string, unknown>;
-        const name = String(fn.name ?? tc.name ?? "");
-        const args = (fn.arguments ?? fn.args ?? tc.arguments ?? {}) as unknown;
-        return { id: String((tc as Record<string, unknown>).id ?? `call-${Date.now()}-${i}`), type: "function" as const, function: { name, arguments: toJsonArgs(args) } };
-      });
-    }
-    if (typeof parsed.name === "string") {
-      const args = (parsed as Record<string, unknown>).args ?? (parsed as Record<string, unknown>).arguments;
-      return [{ id: `call-${Date.now()}-0`, type: "function", function: { name: String(parsed.name), arguments: toJsonArgs(args) } }];
-    }
-  } catch {
-    // no es JSON
-  }
-  return [];
+  // 3) `<tool_calls>` con varios objetos, o JSON suelto dentro de una frase.
+  return deduplicar(objetosJson(raw).flatMap((objeto) => llamadasDeJson(objeto)));
 }
 
 export async function health(): Promise<HealthResult> {
@@ -157,12 +200,12 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
   const base = HF_SPACE_URL.replace(/\/+$/, "");
   const url = `${base}/generate`;
 
-  // Envía tools nativo al Space (deploy/hf-space/app.py ahora acepta `tools`)
-  // El Space usa PROMPT_CORTO y los antepone en _inferir antes de apply_chat_template.
-  const mensajes = req.messages.map((m) => ({
-    role: m.role,
-    content: m.content ?? "",
-  }));
+  // Si el Space ignora `tools`, el catálogo va en el prompt y el modelo
+  // devuelve un JSON que `parseTextoToToolCalls` reconoce.
+  const mensajes = mensajesConHerramientas(
+    req.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
+    req.tools ?? [],
+  );
 
   const payload: Record<string, unknown> = {
     mensajes,

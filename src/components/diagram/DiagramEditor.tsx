@@ -10,6 +10,7 @@ export interface DiagramEditorProps {
   proyectoId?: string;
   readOnly?: boolean;
   nombreUsuario?: string;
+  usuarioId?: number;
   onEstadoColaboracion?: (estado: EstadoColaboracion) => void;
 }
 

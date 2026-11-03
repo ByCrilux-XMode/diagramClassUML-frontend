@@ -2,31 +2,43 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   Bot,
-  ChevronRight,
+  CheckCircle2,
   Loader2,
+  Lock,
+  MessageSquare,
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
+  Save,
   Send,
   Trash2,
   TriangleAlert,
-  Wrench,
 } from "lucide-react";
 import { useIAChat } from "@/hooks/useIAChat";
 import type { ChatEntry } from "@/hooks/useIAChat";
-import type { IAProvider, PendingProposal } from "@/lib/ia/types";
+import type { IAProvider } from "@/lib/ia/types";
+import { guardarPlan, listarPlanes } from "@/lib/planes/api";
+import type { Plan } from "@/lib/planes/api";
 import { HF_USE_ROUTER } from "@/lib/ia/config";
-
-const QUICK_ACTIONS: Array<{ label: string; prompt: string }> = [
-  { label: "Validar", prompt: "Ejecuta validate para revisar el diagrama actual y dime qué observaciones hay." },
-  { label: "Crear Usuario", prompt: "Crea una clase Usuario (key 'usuario') con id: Integer, nombre: String y email: String." },
-  { label: "Conectar 1..*", prompt: "Si existen las clases 'cliente' y 'pedido', conéctalas con una asociación 1..* (Pedido -> Cliente). Si no existen, créalas primero." },
-];
+import { formatearContexto, formatearPlanVigente } from "@/lib/ia/context/diagnostico";
+import { formatearConformidad } from "@/lib/ia/conformidad";
+import type { MensajeChat } from "@/lib/chat/api";
+import { mencionaIA } from "@/lib/chat/mencion";
+import { ChatGrupal } from "@/components/chat/ChatGrupal";
+import { PanelActividad } from "@/components/actividad/PanelActividad";
+import { PanelPropuestas } from "@/components/ia/PanelPropuestas";
 
 export interface AsistentePanelProps {
   readOnly?: boolean;
+  proyectoId?: string | null;
+  usuarioId?: number;
+  usuarioNombre?: string;
+  rol?: string | null;
 }
+
+type Pestana = "chat" | "asistente" | "actividad";
 
 function estatusClass(salud: { ok: boolean } | null): string {
   if (salud === null) {
@@ -97,93 +109,31 @@ function Mensaje({ entry }: { entry: ChatEntry }) {
       {entry.notice && (
         <p className="font-code-sm text-code-sm text-amber-lock">{entry.notice}</p>
       )}
+      {entry.contexto && (
+        <span
+          className={`rounded px-1.5 py-0.5 font-code-sm text-code-sm ${
+            formatearContexto(entry.contexto).degradado
+              ? "bg-amber-100 text-amber-900"
+              : "bg-surface-container-high text-on-surface-variant"
+          }`}
+          title={formatearContexto(entry.contexto).titulo}
+        >
+          {formatearContexto(entry.contexto).texto}
+        </span>
+      )}
       <ToolRounds trace={entry.trace} pensando={false} />
     </div>
   );
 }
 
-function formatProposal(p: PendingProposal): string {
-  const a = p.args as Record<string, unknown>;
-  switch (p.toolName) {
-    case "addClass":
-      return `Crear clase ${String(a.name ?? a.key ?? "?")} (key:${String(a.key ?? "?")})`;
-    case "removeClass":
-      return `Eliminar clase ${String(a.key ?? "?")}`;
-    case "rename":
-      return `Renombrar ${String(a.key ?? "?")} → ${String(a.newName ?? "?")}`;
-    case "connect":
-      return `Conectar ${String(a.from ?? "?")} → ${String(a.to ?? "?")} [${String(a.kind ?? "?")}]`;
-    case "disconnect":
-      return `Desconectar ${String(a.linkKey ?? "?")}`;
-    case "updateAttribute":
-      return `Actualizar atributo ${String(a.classKey ?? "?")}.${String((a.attribute as Record<string, unknown> | undefined)?.name ?? "?")} (${String(a.action ?? "?")})`;
-    case "updateMethod":
-      return `Actualizar método ${String(a.classKey ?? "?")}.${String((a.method as Record<string, unknown> | undefined)?.name ?? "?")} (${String(a.action ?? "?")})`;
-    case "replaceAll":
-      return `Reemplazar modelo completo`;
-    case "validate":
-      return `Validar diagrama`;
-    default:
-      return `${p.toolName} ${JSON.stringify(a).slice(0, 80)}`;
-  }
-}
-//human in loop
-function PropuestaPendiente({
-  pending,
-  resumen,
-  onAprobar,
-  onDescartar,
-  readOnly,
-}: {
-  pending: PendingProposal[];
-  resumen: string | null;
-  onAprobar: () => void;
-  onDescartar: () => void;
-  readOnly: boolean;
-}) {
-  return (
-    <div className="mx-3 mb-3 flex max-h-[45vh] flex-col overflow-hidden rounded-md border border-amber-300 bg-amber-50">
-      <div className="flex flex-1 flex-col overflow-y-auto p-3">
-        <div className="flex items-start gap-2">
-          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-          <div className="flex-1 min-w-0">
-            <p className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-amber-800">
-              Revisión humana requerida — {pending.length} cambio(s) propuesto(s)
-            </p>
-            {resumen && (
-              <p className="mt-1 break-words font-body-md text-body-md text-on-surface">{resumen}</p>
-            )}
-            <ul className="mt-2 max-h-32 list-disc overflow-y-auto break-words pl-4">
-              {pending.map((p: PendingProposal) => (
-                <li key={p.id} className="break-words font-code-sm text-code-sm text-on-surface-variant">
-                  {formatProposal(p)}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-      <div className="sticky bottom-0 flex gap-2 border-t border-amber-200 bg-amber-50 p-3 pt-2">
-        <button
-          onClick={onAprobar}
-          disabled={readOnly}
-          className="rounded bg-primary px-3 py-1.5 font-badge-label text-badge-label font-bold text-on-primary hover:bg-primary/90 disabled:opacity-40"
-        >
-          Aplicar
-        </button>
-        <button
-          onClick={onDescartar}
-          disabled={readOnly}
-          className="rounded border border-outline/60 bg-surface px-3 py-1.5 font-badge-label text-badge-label font-bold text-on-surface hover:bg-surface-container-low disabled:opacity-40"
-        >
-          Descartar
-        </button>
-      </div>
-    </div>
-  );
-}
 
-export default function AsistentePanel({ readOnly = false }: AsistentePanelProps) {
+export default function AsistentePanel({
+  readOnly = false,
+  proyectoId = null,
+  usuarioId,
+  usuarioNombre = "Usuario",
+  rol = null,
+}: AsistentePanelProps) {
   const {
     proveedor,
     setProveedor,
@@ -196,21 +146,114 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
     error,
     salud,
     checking,
-    pendingProposals,
-    propuestaResumen,
+    resolviendoTurno,
     verificarSalud,
     cargarModelos,
     enviar,
-    aprobarPropuesta,
-    descartarPropuesta,
+    responderEnChat,
+    aprobarTurno,
+    rechazarTurno,
     reiniciar,
+    setProyectoActivo,
+    setContextoUsuario,
+    modo,
+    setModo,
+    ambito,
+    setAmbito,
+    ultimoPlan,
+    avisoFallback,
+    conformidad,
+    probandoConformidad,
+    probarConformidad,
   } = useIAChat();
 
   const [abierto, setAbierto] = useState(true);
+  const [pestana, setPestana] = useState<Pestana>("chat");
+  const [turnoDestacado, setTurnoDestacado] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [confirmarPlan, setConfirmarPlan] = useState(false);
+  const [guardandoPlan, setGuardandoPlan] = useState(false);
+  const [avisoPlan, setAvisoPlan] = useState<string | null>(null);
+  const [planVigente, setPlanVigente] = useState<Plan | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const puedeEditar = rol ? rol === "CREADOR" || rol === "EDITOR" : !readOnly;
+  const usuarioChat = useMemo(
+    () => ({ usuarioId: usuarioId ?? null, nombre: usuarioNombre }),
+    [usuarioId, usuarioNombre],
+  );
   const usarInputLibre = useMemo(() => modelos.length === 0, [modelos]);
+  const badgeConformidad = useMemo(() => formatearConformidad(conformidad), [conformidad]);
+  const clasesConformidad =
+    conformidad?.estado === "verde"
+      ? "bg-green-500/10 text-green-700"
+      : conformidad?.estado === "amarillo"
+        ? "bg-amber-lock/10 text-amber-lock"
+        : conformidad?.estado === "rojo"
+          ? "bg-error/10 text-error"
+          : "bg-surface-container-low text-on-surface-variant";
+
+  useEffect(() => {
+    setProyectoActivo(proyectoId);
+  }, [proyectoId, setProyectoActivo]);
+
+  // D49: la interfaz muestra la versión vigente del plan, no solo el último
+  // texto generado. El plan es del proyecto y cambia con otros colaboradores.
+  useEffect(() => {
+    let cancelado = false;
+    setPlanVigente(null);
+    if (!proyectoId) return;
+    void listarPlanes(proyectoId, 1)
+      .then(({ vigente }) => {
+        if (!cancelado) setPlanVigente(vigente);
+      })
+      .catch(() => {
+        if (!cancelado) setPlanVigente(null);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [proyectoId]);
+
+  useEffect(() => {
+    setContextoUsuario({ usuarioId: usuarioId ?? null, nombre: usuarioNombre, puedeEditar });
+  }, [usuarioId, usuarioNombre, puedeEditar, setContextoUsuario]);
+
+  // El ámbito guardado manda al abrir: si la última visita fue privada, se
+  // abre la pestaña privada (D43). Se ajusta durante el render para
+  // sincronizar con el estado que viene del store, sin efectos en cascada.
+  const [ambitoAplicado, setAmbitoAplicado] = useState(ambito);
+  if (ambito !== ambitoAplicado) {
+    setAmbitoAplicado(ambito);
+    if (ambito === "privado") setPestana("asistente");
+  }
+
+  const seleccionarAmbito = (siguiente: "grupo" | "privado") => {
+    setAmbito(siguiente);
+    setPestana(siguiente === "privado" ? "asistente" : "chat");
+  };
+
+  const guardarComoPlan = async () => {
+    if (!proyectoId || !ultimoPlan || guardandoPlan) return;
+    setGuardandoPlan(true);
+    setAvisoPlan(null);
+    try {
+      const plan = await guardarPlan(proyectoId, { contenido: ultimoPlan, origen: "ia" });
+      setPlanVigente(plan);
+      setAvisoPlan(`Guardado como versión ${plan.version} del plan del proyecto.`);
+      setConfirmarPlan(false);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setAvisoPlan(
+        status === 403
+          ? "Tu rol no puede guardar el plan del proyecto."
+          : "No se pudo guardar el plan.",
+      );
+      setConfirmarPlan(false);
+    } finally {
+      setGuardandoPlan(false);
+    }
+  };
 
   useEffect(() => {
     void verificarSalud();
@@ -227,8 +270,25 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
     if (el) el.scrollTop = el.scrollHeight;
   }, [mensajes, pensando, trace]);
 
-  const puedeEnviar =
-    !pensando && !readOnly && modelo.trim() !== "" && input.trim() !== "" && !pendingProposals;
+  // El turno se ejecuta en el cliente que envió el mensaje, después de que el
+  // servidor lo haya persistido. Otros clientes solo lo ven llegar por SSE.
+  const alMencionarIA = async (mensaje: MensajeChat) => {
+    const contenido = (mensaje.contenido ?? "").trim();
+    if (!proyectoId || !contenido || !mencionaIA(contenido)) return;
+    await responderEnChat({
+      proyectoId,
+      prompt: contenido,
+      puedeEditar,
+      mensajeId: mensaje._id,
+    });
+  };
+
+  const verDetalleDelTurno = (turnoId: string) => {
+    setTurnoDestacado(turnoId);
+    setPestana("actividad");
+  };
+
+  const puedeEnviar = !pensando && input.trim() !== "";
 
   const handleSend = () => {
     if (!puedeEnviar) return;
@@ -237,19 +297,13 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
     void enviar(content);
   };
 
-  const handleQuickAction = (prompt: string) => {
-    if (pensando || readOnly || !!pendingProposals) return;
-    setInput("");
-    void enviar(prompt);
-  };
-
   if (!abierto) {
     return (
       <div className="flex h-full shrink-0 flex-col items-center border-l border-outline-variant/60 bg-surface">
         <button
           onClick={() => setAbierto(true)}
           className="flex h-full w-8 items-center justify-center text-on-surface-variant hover:bg-surface-container-low"
-          title="Abrir asistente IA"
+          title="Abrir panel de colaboración"
         >
           <PanelRightOpen className="h-4 w-4" />
         </button>
@@ -257,22 +311,32 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
     );
   }
 
+  const propuesta = (
+    <PanelPropuestas
+      proyectoId={proyectoId}
+      puedeEditar={puedeEditar}
+      resolviendoTurno={resolviendoTurno}
+      onAprobar={aprobarTurno}
+      onRechazar={rechazarTurno}
+    />
+  );
+
   return (
     <aside className="flex h-full w-[340px] max-w-[90vw] shrink-0 flex-col border-l border-outline-variant/60 bg-surface">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-outline-variant/60 px-3">
-        <div className="flex items-center gap-2">
-          <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary/10">
             <Bot className="h-4 w-4 text-primary" />
           </span>
-          <span className="font-class-name text-class-name text-on-surface">Asistente IA</span>
-          <span className="flex items-center gap-1.5">
+          <span className="truncate font-class-name text-class-name text-on-surface">Colaboración</span>
+          <span className="flex shrink-0 items-center gap-1.5">
             <span className={estatusClass(salud)} />
             <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
               {estatusLabel(salud, checking)}
             </span>
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={() => void verificarSalud()}
             disabled={checking}
@@ -284,7 +348,7 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
           <button
             onClick={reiniciar}
             className="rounded p-1 text-on-surface-variant hover:bg-surface-container-low"
-            title="Limpiar historial"
+            title="Limpiar chat privado"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -298,146 +362,307 @@ export default function AsistentePanel({ readOnly = false }: AsistentePanelProps
         </div>
       </header>
 
-      <div className="flex shrink-0 flex-col gap-2 border-b border-outline-variant/60 px-3 py-2">
-        <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1">
-            <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
-              Proveedor
-            </span>
-            <select
-              value={proveedor}
-              onChange={(e) => setProveedor(e.target.value as IAProvider)}
-              disabled={pensando}
-              className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
-            >
-              <option value="ollama">Ollama — Túnel PC (Cloudflare, examen)</option>
-              <option value="hf-space">HF Space — Respaldo (ZeroGPU, público)</option>
-              {HF_USE_ROUTER && <option value="huggingface">Hugging Face (Inferencia)</option>}
-              {HF_USE_ROUTER && <option value="openrouter">OpenRouter</option>}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
-              Modelo
-            </span>
-            {usarInputLibre ? (
-              <input
-                value={modelo}
-                onChange={(e) => setModelo(e.target.value)}
-                disabled={pensando}
-                placeholder="ej. llama3.1:8b o org/modelo"
-                className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface placeholder:text-on-surface-variant disabled:opacity-50"
-              />
-            ) : (
+      <nav className="flex shrink-0 border-b border-outline-variant/60">
+        <button
+          onClick={() => seleccionarAmbito("grupo")}
+          className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 font-badge-label text-badge-label font-bold uppercase tracking-wider transition-colors ${
+            pestana === "chat"
+              ? "border-b-2 border-primary text-primary"
+              : "border-b-2 border-transparent text-on-surface-variant hover:bg-surface-container-low"
+          }`}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          Grupal
+        </button>
+        <button
+          onClick={() => seleccionarAmbito("privado")}
+          className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 font-badge-label text-badge-label font-bold uppercase tracking-wider transition-colors ${
+            pestana === "asistente"
+              ? "border-b-2 border-primary text-primary"
+              : "border-b-2 border-transparent text-on-surface-variant hover:bg-surface-container-low"
+          }`}
+        >
+          <Bot className="h-3.5 w-3.5" />
+          Privado
+        </button>
+        <button
+          onClick={() => setPestana("actividad")}
+          className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 font-badge-label text-badge-label font-bold uppercase tracking-wider transition-colors ${
+            pestana === "actividad"
+              ? "border-b-2 border-primary text-primary"
+              : "border-b-2 border-transparent text-on-surface-variant hover:bg-surface-container-low"
+          }`}
+        >
+          <Activity className="h-3.5 w-3.5" />
+          Actividad
+        </button>
+      </nav>
+
+      {pestana !== "actividad" && (
+        <div className="flex shrink-0 flex-col gap-2 border-b border-outline-variant/60 px-3 py-2">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
+                Proveedor
+              </span>
               <select
-                value={modelo}
-                onChange={(e) => setModelo(e.target.value)}
+                value={proveedor}
+                onChange={(e) => setProveedor(e.target.value as IAProvider)}
                 disabled={pensando}
                 className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
               >
-                <option value="">Elegir modelo...</option>
-                {modelos.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                <option value="hf-space">HF Space — modelo propio</option>
+                {HF_USE_ROUTER && <option value="huggingface">Hugging Face (Inferencia)</option>}
+                {HF_USE_ROUTER && <option value="openrouter">OpenRouter</option>}
               </select>
-            )}
-          </label>
-        </div>
-
-        <div className="flex flex-wrap gap-1">
-          {QUICK_ACTIONS.map((accion) => (
-            <button
-              key={accion.label}
-              onClick={() => handleQuickAction(accion.prompt)}
-              disabled={pensando || readOnly || !modelo.trim() || !!pendingProposals}
-              className="inline-flex items-center gap-1 rounded border border-primary/25 bg-primary/5 px-2 py-1 font-code-sm text-code-sm text-primary transition-colors hover:bg-primary/10 disabled:opacity-40"
-            >
-              <Wrench className="h-3 w-3" />
-              {accion.label}
-            </button>
-          ))}
-        </div>
-
-        {readOnly && (
-          <p className="font-code-sm text-code-sm text-amber-lock">
-            Vista de solo lectura: el asistente está deshabilitado.
-          </p>
-        )}
-      </div>
-
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3" ref={scrollRef}>
-        {mensajes.length === 0 && (
-          <p className="font-body-md text-body-md text-on-surface-variant">
-            Pregúntale al asistente: &quot;crea una clase Usuario&quot;, &quot;valida el
-            diagrama&quot;, &quot;conecta Pedido con Cliente 1..*&quot;, etc.
-          </p>
-        )}
-        {mensajes.map((m) => (
-          <Mensaje key={m.id} entry={m} />
-        ))}
-        {pensando && (
-          <div className="flex items-center gap-2">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-            <span className="font-code-sm text-code-sm text-on-surface-variant">
-              Pensando y editando...
-            </span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
+                Modelo
+              </span>
+              {usarInputLibre ? (
+                <input
+                  value={modelo}
+                  onChange={(e) => setModelo(e.target.value)}
+                  disabled={pensando}
+                  placeholder="ej. org/modelo"
+                  className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface placeholder:text-on-surface-variant disabled:opacity-50"
+                />
+              ) : (
+                <select
+                  value={modelo}
+                  onChange={(e) => setModelo(e.target.value)}
+                  disabled={pensando}
+                  className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
+                >
+                  <option value="">Elegir modelo...</option>
+                  {modelos.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
           </div>
-        )}
-      </div>
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`rounded px-2 py-1 font-badge-label text-badge-label uppercase tracking-wider ${clasesConformidad}`}
+              title={badgeConformidad.detalle}
+            >
+              {badgeConformidad.etiqueta}
+            </span>
+            <button
+              onClick={() => void probarConformidad()}
+              disabled={probandoConformidad || pensando || modelo.trim() === ""}
+              className="flex items-center gap-1 rounded border border-outline/60 px-2 py-1 font-badge-label text-badge-label uppercase tracking-wider text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-50"
+              title="Envía una petición fija con las herramientas reales para ver si el proveedor puede editar"
+            >
+              {probandoConformidad ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-3 w-3" />
+              )}
+              {probandoConformidad ? "Probando…" : "Probar"}
+            </button>
+          </div>
+          {avisoFallback && (
+            <p className="font-code-sm text-code-sm text-amber-lock" role="status">
+              {avisoFallback}
+            </p>
+          )}
+        </div>
+      )}
 
-      {pendingProposals && pendingProposals.length > 0 && (
-        <PropuestaPendiente
-          pending={pendingProposals}
-          resumen={propuestaResumen}
-          onAprobar={aprobarPropuesta}
-          onDescartar={descartarPropuesta}
-          readOnly={readOnly || pensando}
+      {pestana !== "actividad" && (
+        <div className="flex shrink-0 flex-col gap-1.5 border-b border-outline-variant/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface-variant">
+                Modo
+              </span>
+              {pestana === "asistente" ? (
+                <span
+                  className="flex items-center gap-1 rounded bg-surface-container-low px-2 py-1 font-badge-label text-badge-label text-on-surface"
+                  title="Plan de solo lectura: puede consultar el diagrama, el plan y el historial, pero nunca modificarlo"
+                >
+                  <Lock className="h-3 w-3" />
+                  Plan · solo lectura
+                </span>
+              ) : puedeEditar ? (
+                <div className="flex items-center overflow-hidden rounded border border-outline/60">
+                  <button
+                    onClick={() => setModo("plan")}
+                    disabled={pensando}
+                    aria-pressed={modo === "plan"}
+                    className={`px-2.5 py-1 font-badge-label text-badge-label uppercase tracking-wider transition-colors disabled:opacity-50 ${
+                      modo === "plan"
+                        ? "bg-primary text-on-primary"
+                        : "bg-surface-container-low text-on-surface-variant hover:bg-surface"
+                    }`}
+                  >
+                    Plan
+                  </button>
+                  <button
+                    onClick={() => setModo("build")}
+                    disabled={pensando}
+                    aria-pressed={modo === "build"}
+                    className={`px-2.5 py-1 font-badge-label text-badge-label uppercase tracking-wider transition-colors disabled:opacity-50 ${
+                      modo === "build"
+                        ? "bg-primary text-on-primary"
+                        : "bg-surface-container-low text-on-surface-variant hover:bg-surface"
+                    }`}
+                  >
+                    Build
+                  </button>
+                </div>
+              ) : (
+                <span className="rounded bg-surface-container-low px-2 py-1 font-badge-label text-badge-label uppercase tracking-wider text-on-surface-variant">
+                  Solo consulta
+                </span>
+              )}
+            </div>
+            {ultimoPlan && puedeEditar && (
+              <button
+                onClick={() => {
+                  if (confirmarPlan) void guardarComoPlan();
+                  else {
+                    setConfirmarPlan(true);
+                    setAvisoPlan(null);
+                  }
+                }}
+                onBlur={() => setConfirmarPlan(false)}
+                disabled={guardandoPlan}
+                className="flex items-center gap-1.5 rounded border border-primary/60 px-2 py-1 font-badge-label text-badge-label uppercase tracking-wider text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+                title="Guarda la última respuesta de la IA como una versión nueva del plan del proyecto"
+              >
+                {guardandoPlan ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+                {guardandoPlan ? "Guardando…" : confirmarPlan ? "¿Confirmar?" : "Guardar plan"}
+              </button>
+            )}
+          </div>
+          <p className="font-code-sm text-code-sm text-on-surface-variant" title={planVigente?.contenido ?? ""}>
+            {formatearPlanVigente(planVigente)}
+          </p>
+          {avisoPlan && (
+            <p className="font-code-sm text-code-sm text-primary" role="status">
+              {avisoPlan}
+            </p>
+          )}
+        </div>
+      )}
+
+      {pestana === "chat" && (
+        <>
+          {error && (
+            <p className="shrink-0 border-b border-outline-variant/60 px-3 py-1.5 font-code-sm text-code-sm text-error">
+              {error}
+            </p>
+          )}
+          {propuesta}
+          <ChatGrupal
+            proyectoId={proyectoId}
+            usuario={usuarioChat}
+            puedeEditar={puedeEditar}
+            onMencionIA={alMencionarIA}
+            onVerDetalle={verDetalleDelTurno}
+          />
+          {pensando && (
+            <p className="flex shrink-0 items-center gap-2 border-t border-outline-variant/60 px-3 py-1.5 font-code-sm text-code-sm text-on-surface-variant">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+              La IA está respondiendo en el chat…
+            </p>
+          )}
+        </>
+      )}
+
+      {pestana === "asistente" && (
+        <>
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3" ref={scrollRef}>
+            {mensajes.length === 0 && (
+              <p className="font-body-md text-body-md text-on-surface-variant">
+                Consulta privada sobre el diagrama: &quot;¿qué relaciones tiene Pedido?&quot;,
+                &quot;valida el diagrama&quot;, &quot;¿qué falta para que sea coherente?&quot;.
+                Usa las mismas herramientas de lectura que el chat grupal (estado del
+                diagrama, validación, plan e historial), pero no puede editar. Para
+                pedir cambios, menciónala con{" "}
+                <span className="font-code-sm text-code-sm">@ia</span> en el chat grupal.
+              </p>
+            )}
+            {mensajes.map((m) => (
+              <Mensaje key={m.id} entry={m} />
+            ))}
+            {pensando && (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                <span className="font-code-sm text-code-sm text-on-surface-variant">Consultando…</span>
+              </div>
+            )}
+          </div>
+
+          {propuesta}
+
+          <div className="shrink-0 border-t border-outline-variant/60 px-3 py-2">
+            <div className="mb-2 flex min-h-[16px] flex-wrap gap-1">
+              <ToolRounds trace={pensando ? trace : []} pensando={pensando} />
+            </div>
+            {error && <p className="mb-2 font-code-sm text-code-sm text-error">{error}</p>}
+            {!puedeEditar && (
+              <p className="mb-2 font-code-sm text-code-sm text-amber-lock">
+                Tu rol es LECTOR: puedes consultar, pero la IA no aplicará cambios.
+              </p>
+            )}
+            <div className="flex items-end gap-2">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                rows={1}
+                disabled={pensando}
+                placeholder="Pregunta sobre el diagrama…"
+                className="max-h-32 min-h-[36px] flex-1 resize-y rounded-md border border-outline/60 bg-surface-container-low px-3 py-2 font-body-md text-body-md text-on-surface placeholder:text-on-surface-variant outline-none focus:border-primary disabled:opacity-50"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!puedeEnviar}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-on-primary transition-opacity hover:bg-primary/90 disabled:opacity-40"
+                title={modelo.trim() === "" ? "Consultar con el modelo del tramo" : "Consultar"}
+              >
+                {pensando ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+            {modelo.trim() === "" && (
+              <p className="mt-1 font-code-sm text-code-sm text-on-surface-variant">
+                Sin modelo elegido se usa el modelo por defecto del tramo.
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {pestana === "actividad" && (
+        <PanelActividad
+          proyectoId={proyectoId}
+          turnoDestacado={turnoDestacado}
+          onLimpiarDestacado={() => setTurnoDestacado(null)}
+          puedeEditar={puedeEditar}
+          usuarioId={usuarioId}
+          usuarioNombre={usuarioNombre}
         />
       )}
-      <div className="shrink-0 border-t border-outline-variant/60 px-3 py-2">
-        <div className="mb-2 flex min-h-[16px] flex-wrap gap-1">
-          <ToolRounds trace={pensando ? trace : []} pensando={pensando} />
-        </div>
-        {error && <p className="mb-2 font-code-sm text-code-sm text-error">{error}</p>}
-        <div className="flex items-end gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            rows={1}
-            disabled={pensando || readOnly || !!pendingProposals}
-            placeholder={
-              pendingProposals ? "Aprueba o descarta la propuesta pendiente" : readOnly ? "Solo lectura" : "Escribe una instrucción..."
-            }
-            className="max-h-32 min-h-[36px] flex-1 resize-y rounded-md border border-outline/60 bg-surface-container-low px-3 py-2 font-body-md text-body-md text-on-surface placeholder:text-on-surface-variant outline-none focus:border-primary disabled:opacity-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={!puedeEnviar}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-on-primary transition-opacity hover:bg-primary/90 disabled:opacity-40"
-            title={modelo.trim() === "" ? "Elige un modelo primero" : "Enviar"}
-          >
-            {pensando ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </button>
-        </div>
-        {modelo.trim() === "" && !readOnly && (
-          <p className="mt-1 font-code-sm text-code-sm text-on-surface-variant">
-            <ChevronRight className="inline h-3 w-3" />
-            Elige un modelo arriba para habilitar el envío.
-          </p>
-        )}
-      </div>
     </aside>
   );
 }
