@@ -28,6 +28,7 @@ import {
   listarPermisos,
 } from "@/lib/colaboradores";
 import {
+  eliminarVersion,
   listarVersiones,
   obtenerVersion,
   restaurarVersion,
@@ -86,19 +87,20 @@ function autorVersion(version: VersionProyecto): string {
 
 function mensajeErrorVersiones(
   err: unknown,
-  accion: "cargar" | "detalle" | "restaurar"
+  accion: "cargar" | "detalle" | "restaurar" | "eliminar"
 ): string {
   const status = (err as { response?: { status?: number } })?.response?.status;
   if (status === 401) return "Sesión expirada";
   if (status === 403) return "Sin permiso (solo CREADOR/EDITOR)";
   if (status === 404) {
-    return accion === "detalle"
+    return accion === "detalle" || accion === "eliminar"
       ? "La versión no existe en este proyecto"
       : "Proyecto o versión no encontrados";
   }
   if (status === 400) return "Datos inválidos";
   if (accion === "detalle") return "No se pudo abrir la versión";
   if (accion === "restaurar") return "No se pudo restaurar la versión";
+  if (accion === "eliminar") return "No se pudo eliminar la versión";
   return "No se pudieron cargar las versiones";
 }
 
@@ -144,6 +146,8 @@ export default function ViewDetailsModal({
   const [mostrarJsonVersion, setMostrarJsonVersion] = useState(false);
   const [confirmarRestaurarId, setConfirmarRestaurarId] = useState<number | null>(null);
   const [restaurandoId, setRestaurandoId] = useState<number | null>(null);
+  const [confirmarEliminarId, setConfirmarEliminarId] = useState<number | null>(null);
+  const [eliminandoId, setEliminandoId] = useState<number | null>(null);
 
   const showToast = (msg: string, type: "success" | "error") => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -269,6 +273,7 @@ export default function ViewDetailsModal({
 
   const handleRestaurarVersion = async (versionId: number) => {
     setRestaurandoId(versionId);
+    setConfirmarEliminarId(null);
     setErrorVersiones(null);
     try {
       await restaurarVersion(proyectoId, versionId);
@@ -297,6 +302,51 @@ export default function ViewDetailsModal({
       showToast(m, "error");
     } finally {
       setRestaurandoId(null);
+    }
+  };
+
+  const handleEliminarVersion = async (versionId: number) => {
+    setEliminandoId(versionId);
+    setConfirmarRestaurarId(null);
+    setErrorVersiones(null);
+    try {
+      await eliminarVersion(proyectoId, versionId);
+      setConfirmarEliminarId(null);
+      if (versionDetalle?.versionId === versionId) {
+        setVersionDetalle(null);
+        setMostrarJsonVersion(false);
+      }
+
+      // Si la página actual queda vacía, retroceder una página.
+      const totalRestante = Math.max(0, totalVersiones - 1);
+      const paginasRestantes = Math.max(
+        1,
+        Math.ceil(totalRestante / LIMITE_VERSIONES)
+      );
+      const paginaDestino = Math.min(paginaVersiones, paginasRestantes);
+
+      if (paginaDestino !== paginaVersiones) {
+        setCargandoVersiones(true);
+        setPaginaVersiones(paginaDestino);
+      } else {
+        setCargandoVersiones(true);
+        try {
+          const res = await consultarVersiones(paginaDestino);
+          setVersiones(res.datos ?? []);
+          setTotalVersiones(res.total ?? 0);
+        } catch {
+          setErrorVersiones("Versión eliminada, pero no se pudo recargar la lista");
+        } finally {
+          setCargandoVersiones(false);
+        }
+      }
+      showToast("Versión eliminada", "success");
+    } catch (err: unknown) {
+      const m = mensajeErrorVersiones(err, "eliminar");
+      setErrorVersiones(m);
+      showToast(m, "error");
+    } finally {
+      setEliminandoId(null);
     }
   };
 
@@ -728,7 +778,13 @@ export default function ViewDetailsModal({
                   const modelo = esquemaToModel(
                     abierta && versionDetalle ? versionDetalle.esquemaJson : version.esquemaJson
                   );
-                  const confirmando = confirmarRestaurarId === version.versionId;
+                  const confirmandoRestaurar =
+                    confirmarRestaurarId === version.versionId;
+                  const confirmandoEliminar =
+                    confirmarEliminarId === version.versionId;
+                  const ocupado =
+                    restaurandoId === version.versionId ||
+                    eliminandoId === version.versionId;
                   return (
                     <div key={version.versionId} className="flex flex-col">
                       <div className="flex items-start justify-between gap-3 p-3">
@@ -760,35 +816,75 @@ export default function ViewDetailsModal({
                             )}
                           </button>
                           {puedeEditarVersiones &&
-                            (confirmando ? (
+                            !confirmandoRestaurar &&
+                            !confirmandoEliminar && (
                               <>
                                 <button
-                                  onClick={() => handleRestaurarVersion(version.versionId)}
-                                  disabled={restaurandoId === version.versionId}
-                                  className="rounded bg-error px-2.5 py-1 font-code-sm text-[11px] text-on-error transition-colors hover:bg-error/90 disabled:opacity-50"
+                                  onClick={() => {
+                                    setConfirmarEliminarId(null);
+                                    setConfirmarRestaurarId(version.versionId);
+                                  }}
+                                  className="flex items-center gap-1 rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:border-primary hover:bg-surface-variant"
+                                  title="Restaurar esta versión"
                                 >
-                                  {restaurandoId === version.versionId
-                                    ? "Restaurando..."
-                                    : "Confirmar"}
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                  Restaurar
                                 </button>
                                 <button
-                                  onClick={() => setConfirmarRestaurarId(null)}
-                                  disabled={restaurandoId === version.versionId}
-                                  className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                                  onClick={() => {
+                                    setConfirmarRestaurarId(null);
+                                    setConfirmarEliminarId(version.versionId);
+                                  }}
+                                  className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-error"
+                                  title="Eliminar versión"
+                                  aria-label={`Eliminar versión ${version.nombre}`}
                                 >
-                                  Cancelar
+                                  <Trash2 className="h-4 w-4" />
                                 </button>
                               </>
-                            ) : (
+                            )}
+
+                          {puedeEditarVersiones && confirmandoRestaurar && (
+                            <>
                               <button
-                                onClick={() => setConfirmarRestaurarId(version.versionId)}
-                                className="flex items-center gap-1 rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:border-primary hover:bg-surface-variant"
-                                title="Restaurar esta versión"
+                                onClick={() => handleRestaurarVersion(version.versionId)}
+                                disabled={ocupado}
+                                className="rounded bg-primary px-2.5 py-1 font-code-sm text-[11px] text-on-primary transition-colors hover:bg-on-primary-fixed-variant disabled:opacity-50"
                               >
-                                <RotateCcw className="h-3.5 w-3.5" />
-                                Restaurar
+                                {restaurandoId === version.versionId
+                                  ? "Restaurando..."
+                                  : "Confirmar restauración"}
                               </button>
-                            ))}
+                              <button
+                                onClick={() => setConfirmarRestaurarId(null)}
+                                disabled={ocupado}
+                                className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                              >
+                                Cancelar
+                              </button>
+                            </>
+                          )}
+
+                          {puedeEditarVersiones && confirmandoEliminar && (
+                            <>
+                              <button
+                                onClick={() => handleEliminarVersion(version.versionId)}
+                                disabled={ocupado}
+                                className="rounded bg-error px-2.5 py-1 font-code-sm text-[11px] text-on-error transition-colors hover:bg-error/90 disabled:opacity-50"
+                              >
+                                {eliminandoId === version.versionId
+                                  ? "Eliminando..."
+                                  : "Eliminar"}
+                              </button>
+                              <button
+                                onClick={() => setConfirmarEliminarId(null)}
+                                disabled={ocupado}
+                                className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                              >
+                                Cancelar
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -866,8 +962,8 @@ export default function ViewDetailsModal({
 
             {puedeEditarVersiones && (
               <p className="font-code-sm text-[11px] text-on-surface-variant">
-                Restaurar reemplaza el esquema actual del proyecto. Recarga el editor
-                para ver los cambios.
+                Restaurar reemplaza el esquema actual del proyecto (recarga el editor
+                para verlo). Eliminar solo borra la versión del historial.
               </p>
             )}
           </section>

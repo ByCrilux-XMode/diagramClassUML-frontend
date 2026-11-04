@@ -70,3 +70,15 @@ export async function restaurarVersion(
   );
   return data;
 }
+
+/**
+ * DELETE /proyectos/:id/versiones/:versionId
+ * Elimina una versión del historial. No modifica el esquema actual del proyecto.
+ * Responde 204 sin contenido.
+ */
+export async function eliminarVersion(
+  proyectoId: string | number,
+  versionId: string | number
+): Promise<void> {
+  await api.delete(`/proyectos/${proyectoId}/versiones/${versionId}`);
+}
