@@ -3,15 +3,21 @@
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Download,
+  Eye,
+  EyeOff,
+  FileClock,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
   Upload,
   UserPlus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { actualizarProyecto, obtenerProyecto } from "@/lib/proyectos";
 import {
   actualizarPermisoColaborador,
@@ -21,7 +27,17 @@ import {
   listarColaboradores,
   listarPermisos,
 } from "@/lib/colaboradores";
-import type { Colaborador, Permiso, RolProyecto } from "@/types/proyecto";
+import {
+  listarVersiones,
+  obtenerVersion,
+  restaurarVersion,
+} from "@/lib/versiones";
+import type {
+  Colaborador,
+  Permiso,
+  RolProyecto,
+  VersionProyecto,
+} from "@/types/proyecto";
 import { parseEAXml, serializeEAXml } from "@/lib/xmi/ea";
 import ExportBackendModal from "../backend/ExportBackendModal";
 import type { UmlModelData } from "@/types/uml";
@@ -50,6 +66,42 @@ function etiquetaPermiso(permisoId: number): string {
   return permisoId === 2 ? "Editor" : "Visualizador / Lector";
 }
 
+const LIMITE_VERSIONES = 10;
+
+function formatearFecha(iso?: string | null): string {
+  if (!iso) return "—";
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return iso;
+  return fecha.toLocaleString("es-ES", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function autorVersion(version: VersionProyecto): string {
+  const persona = version.creadoPor?.persona;
+  const nombreCompleto = `${persona?.nombre ?? ""} ${persona?.apellido ?? ""}`.trim();
+  return nombreCompleto || version.creadoPor?.username || "—";
+}
+
+function mensajeErrorVersiones(
+  err: unknown,
+  accion: "cargar" | "detalle" | "restaurar"
+): string {
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  if (status === 401) return "Sesión expirada";
+  if (status === 403) return "Sin permiso (solo CREADOR/EDITOR)";
+  if (status === 404) {
+    return accion === "detalle"
+      ? "La versión no existe en este proyecto"
+      : "Proyecto o versión no encontrados";
+  }
+  if (status === 400) return "Datos inválidos";
+  if (accion === "detalle") return "No se pudo abrir la versión";
+  if (accion === "restaurar") return "No se pudo restaurar la versión";
+  return "No se pudieron cargar las versiones";
+}
+
 export default function ViewDetailsModal({
   open,
   onClose,
@@ -63,6 +115,7 @@ export default function ViewDetailsModal({
   const [error, setError] = useState<string | null>(null);
 
   const esCreador = rol === "CREADOR";
+  const puedeEditarVersiones = rol === "CREADOR" || rol === "EDITOR";
   const [colaboradores, setColaboradores] = useState<Colaborador[]>([]);
   const [permisos, setPermisos] = useState<Permiso[]>([]);
   const [pendingPermisos, setPendingPermisos] = useState<Record<number, number>>({});
@@ -80,6 +133,17 @@ export default function ViewDetailsModal({
   const [exportando, setExportando] = useState(false);
   const [backendOpen, setBackendOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [versiones, setVersiones] = useState<VersionProyecto[]>([]);
+  const [totalVersiones, setTotalVersiones] = useState(0);
+  const [paginaVersiones, setPaginaVersiones] = useState(1);
+  const [cargandoVersiones, setCargandoVersiones] = useState(true);
+  const [errorVersiones, setErrorVersiones] = useState<string | null>(null);
+  const [versionDetalle, setVersionDetalle] = useState<VersionProyecto | null>(null);
+  const [cargandoDetalleId, setCargandoDetalleId] = useState<number | null>(null);
+  const [mostrarJsonVersion, setMostrarJsonVersion] = useState(false);
+  const [confirmarRestaurarId, setConfirmarRestaurarId] = useState<number | null>(null);
+  const [restaurandoId, setRestaurandoId] = useState<number | null>(null);
 
   const showToast = (msg: string, type: "success" | "error") => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -145,6 +209,96 @@ export default function ViewDetailsModal({
       })
       .finally(() => setCargandoColab(false));
   }, [open, proyectoId, esCreador]);
+
+  const totalPaginasVersiones = Math.max(
+    1,
+    Math.ceil(totalVersiones / LIMITE_VERSIONES)
+  );
+
+  const consultarVersiones = useCallback(
+    (pagina: number) => listarVersiones(proyectoId, pagina, LIMITE_VERSIONES),
+    [proyectoId]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelado = false;
+    consultarVersiones(paginaVersiones)
+      .then((res) => {
+        if (cancelado) return;
+        setVersiones(res.datos ?? []);
+        setTotalVersiones(res.total ?? 0);
+        setErrorVersiones(null);
+        setCargandoVersiones(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelado) return;
+        setErrorVersiones(mensajeErrorVersiones(err, "cargar"));
+        setCargandoVersiones(false);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [open, paginaVersiones, consultarVersiones]);
+
+  const cambiarPaginaVersiones = (nuevaPagina: number) => {
+    const pagina = Math.min(Math.max(1, nuevaPagina), totalPaginasVersiones);
+    if (pagina === paginaVersiones) return;
+    setCargandoVersiones(true);
+    setPaginaVersiones(pagina);
+  };
+
+  const handleVerVersion = async (versionId: number) => {
+    if (versionDetalle?.versionId === versionId) {
+      setVersionDetalle(null);
+      setMostrarJsonVersion(false);
+      return;
+    }
+    setCargandoDetalleId(versionId);
+    setErrorVersiones(null);
+    try {
+      const version = await obtenerVersion(proyectoId, versionId);
+      setVersionDetalle(version);
+      setMostrarJsonVersion(false);
+    } catch (err: unknown) {
+      setErrorVersiones(mensajeErrorVersiones(err, "detalle"));
+    } finally {
+      setCargandoDetalleId(null);
+    }
+  };
+
+  const handleRestaurarVersion = async (versionId: number) => {
+    setRestaurandoId(versionId);
+    setErrorVersiones(null);
+    try {
+      await restaurarVersion(proyectoId, versionId);
+      setConfirmarRestaurarId(null);
+      setVersionDetalle(null);
+      setMostrarJsonVersion(false);
+      if (paginaVersiones === 1) {
+        setCargandoVersiones(true);
+        try {
+          const res = await consultarVersiones(1);
+          setVersiones(res.datos ?? []);
+          setTotalVersiones(res.total ?? 0);
+        } catch {
+          setErrorVersiones("Versión restaurada, pero no se pudo recargar la lista");
+        } finally {
+          setCargandoVersiones(false);
+        }
+      } else {
+        setCargandoVersiones(true);
+        setPaginaVersiones(1);
+      }
+      showToast("Versión restaurada — recarga el editor para verla", "success");
+    } catch (err: unknown) {
+      const m = mensajeErrorVersiones(err, "restaurar");
+      setErrorVersiones(m);
+      showToast(m, "error");
+    } finally {
+      setRestaurandoId(null);
+    }
+  };
 
   const handleActualizar = async () => {
     const trimmed = nombre.trim();
@@ -544,6 +698,178 @@ export default function ViewDetailsModal({
                 </div>
               </div>
             </div>
+          </section>
+
+          <section className="flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-outline-variant/30 pb-1">
+              <div className="flex items-center gap-2">
+                <FileClock className="h-3.5 w-3.5 text-on-surface-variant" />
+                <h3 className="font-class-name text-[12px] font-bold uppercase tracking-wider text-on-surface">
+                  Versiones
+                </h3>
+              </div>
+              <span className="font-code-sm text-code-sm text-on-surface-variant">
+                {totalVersiones} en total
+              </span>
+            </div>
+
+            {cargandoVersiones && versiones.length === 0 ? (
+              <p className="font-code-sm text-code-sm text-on-surface-variant">
+                Cargando versiones...
+              </p>
+            ) : versiones.length === 0 ? (
+              <p className="font-code-sm text-code-sm text-on-surface-variant">
+                Todavía no hay versiones guardadas.
+              </p>
+            ) : (
+              <div className="flex flex-col divide-y divide-outline-variant/30 rounded border border-outline-variant/40 bg-surface-container-lowest">
+                {versiones.map((version) => {
+                  const abierta = versionDetalle?.versionId === version.versionId;
+                  const modelo = esquemaToModel(
+                    abierta && versionDetalle ? versionDetalle.esquemaJson : version.esquemaJson
+                  );
+                  const confirmando = confirmarRestaurarId === version.versionId;
+                  return (
+                    <div key={version.versionId} className="flex flex-col">
+                      <div className="flex items-start justify-between gap-3 p-3">
+                        <div className="min-w-0">
+                          <p className="truncate font-class-name text-class-name leading-snug text-on-surface">
+                            {version.nombre}
+                          </p>
+                          <p className="truncate font-code-sm text-[11px] text-on-surface-variant">
+                            {formatearFecha(version.creadaEn)} · {autorVersion(version)}
+                          </p>
+                          {version.descripcion && (
+                            <p className="mt-1 break-words font-code-sm text-[12px] text-on-surface-variant">
+                              {version.descripcion}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleVerVersion(version.versionId)}
+                            className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface"
+                            title={abierta ? "Ocultar versión" : "Ver versión"}
+                          >
+                            {cargandoDetalleId === version.versionId ? (
+                              <span className="block h-[18px] w-[18px] animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
+                            ) : abierta ? (
+                              <EyeOff className="h-[18px] w-[18px]" />
+                            ) : (
+                              <Eye className="h-[18px] w-[18px]" />
+                            )}
+                          </button>
+                          {puedeEditarVersiones &&
+                            (confirmando ? (
+                              <>
+                                <button
+                                  onClick={() => handleRestaurarVersion(version.versionId)}
+                                  disabled={restaurandoId === version.versionId}
+                                  className="rounded bg-error px-2.5 py-1 font-code-sm text-[11px] text-on-error transition-colors hover:bg-error/90 disabled:opacity-50"
+                                >
+                                  {restaurandoId === version.versionId
+                                    ? "Restaurando..."
+                                    : "Confirmar"}
+                                </button>
+                                <button
+                                  onClick={() => setConfirmarRestaurarId(null)}
+                                  disabled={restaurandoId === version.versionId}
+                                  className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                                >
+                                  Cancelar
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmarRestaurarId(version.versionId)}
+                                className="flex items-center gap-1 rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:border-primary hover:bg-surface-variant"
+                                title="Restaurar esta versión"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                                Restaurar
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+
+                      {abierta && versionDetalle && (
+                        <div className="border-t border-outline-variant/30 bg-surface-container-low px-3 py-2.5">
+                          <div className="grid grid-cols-2 gap-2 font-code-sm text-[11px] text-on-surface-variant sm:grid-cols-4">
+                            <div>
+                              <span className="block text-outline">Versión</span>
+                              #{versionDetalle.versionId}
+                            </div>
+                            <div>
+                              <span className="block text-outline">Nodos</span>
+                              {modelo.nodes.length}
+                            </div>
+                            <div>
+                              <span className="block text-outline">Aristas</span>
+                              {modelo.links.length}
+                            </div>
+                            <div>
+                              <span className="block text-outline">Creada</span>
+                              {formatearFecha(versionDetalle.creadaEn)}
+                            </div>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <p className="font-code-sm text-[12px] text-on-surface-variant">
+                              Autor: {autorVersion(versionDetalle)}
+                            </p>
+                            <button
+                              onClick={() => setMostrarJsonVersion((prev) => !prev)}
+                              className="rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant"
+                            >
+                              {mostrarJsonVersion ? "Ocultar JSON" : "Ver JSON"}
+                            </button>
+                          </div>
+                          {mostrarJsonVersion && (
+                            <pre className="mt-2 max-h-40 overflow-auto rounded border border-outline-variant/60 bg-surface-container-lowest p-2 font-code-sm text-[11px] leading-relaxed text-on-surface">
+                              {JSON.stringify(versionDetalle.esquemaJson ?? {}, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {errorVersiones && (
+              <p className="font-code-sm text-code-sm text-error">{errorVersiones}</p>
+            )}
+
+            {totalVersiones > LIMITE_VERSIONES && (
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={() => cambiarPaginaVersiones(paginaVersiones - 1)}
+                  disabled={paginaVersiones <= 1 || cargandoVersiones}
+                  className="flex items-center gap-1 rounded border border-outline-variant px-2.5 py-1 font-code-sm text-code-sm text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Anterior
+                </button>
+                <span className="font-code-sm text-code-sm text-on-surface-variant">
+                  Página {paginaVersiones} de {totalPaginasVersiones}
+                </span>
+                <button
+                  onClick={() => cambiarPaginaVersiones(paginaVersiones + 1)}
+                  disabled={paginaVersiones >= totalPaginasVersiones || cargandoVersiones}
+                  className="flex items-center gap-1 rounded border border-outline-variant px-2.5 py-1 font-code-sm text-code-sm text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                >
+                  Siguiente
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
+            {puedeEditarVersiones && (
+              <p className="font-code-sm text-[11px] text-on-surface-variant">
+                Restaurar reemplaza el esquema actual del proyecto. Recarga el editor
+                para ver los cambios.
+              </p>
+            )}
           </section>
 
           <section className="flex flex-col gap-3">

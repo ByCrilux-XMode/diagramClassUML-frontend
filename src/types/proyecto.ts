@@ -45,3 +45,25 @@ export interface Colaborador {
   permiso: Permiso;
   usuario: UsuarioProyecto;
 }
+
+export interface CreadorVersion {
+  usuarioId: number;
+  username: string;
+  persona: Persona;
+}
+
+export interface VersionProyecto {
+  versionId: number;
+  nombre: string;
+  descripcion?: string | null;
+  esquemaJson: Record<string, unknown> | null;
+  creadaEn: string;
+  proyectoId: number;
+  creadoPorId: number | null;
+  creadoPor: CreadorVersion | null;
+}
+
+export interface ListaVersionesResponse {
+  datos: VersionProyecto[];
+  total: number;
+}
