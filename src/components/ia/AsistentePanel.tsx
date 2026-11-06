@@ -26,7 +26,9 @@ import { formatearContexto, formatearPlanVigente } from "@/lib/ia/context/diagno
 import { formatearConformidad } from "@/lib/ia/conformidad";
 import type { MensajeChat } from "@/lib/chat/api";
 import { mencionaIA } from "@/lib/chat/mencion";
+import { insertarDictado } from "@/lib/ia/stt";
 import { ChatGrupal } from "@/components/chat/ChatGrupal";
+import { BotonDictado } from "@/components/chat/BotonDictado";
 import { PanelActividad } from "@/components/actividad/PanelActividad";
 import { PanelPropuestas } from "@/components/ia/PanelPropuestas";
 
@@ -176,6 +178,7 @@ export default function AsistentePanel({
   const [avisoPlan, setAvisoPlan] = useState<string | null>(null);
   const [planVigente, setPlanVigente] = useState<Plan | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const puedeEditar = rol ? rol === "CREADOR" || rol === "EDITOR" : !readOnly;
   const usuarioChat = useMemo(
@@ -295,6 +298,18 @@ export default function AsistentePanel({
     const content = input;
     setInput("");
     void enviar(content);
+  };
+
+  const aplicarDictado = (dictado: string) => {
+    const area = inputRef.current;
+    const cursor = area?.selectionStart ?? input.length;
+    const resultado = insertarDictado(input, dictado, cursor);
+    setInput(resultado.texto);
+    requestAnimationFrame(() => {
+      if (!area) return;
+      area.focus();
+      area.setSelectionRange(resultado.cursor, resultado.cursor);
+    });
   };
 
   if (!abierto) {
@@ -618,6 +633,7 @@ export default function AsistentePanel({
             )}
             <div className="flex items-end gap-2">
               <textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -630,6 +646,11 @@ export default function AsistentePanel({
                 disabled={pensando}
                 placeholder="Pregunta sobre el diagrama…"
                 className="max-h-32 min-h-[36px] flex-1 resize-y rounded-md border border-outline/60 bg-surface-container-low px-3 py-2 font-body-md text-body-md text-on-surface placeholder:text-on-surface-variant outline-none focus:border-primary disabled:opacity-50"
+              />
+              <BotonDictado
+                onTexto={aplicarDictado}
+                disabled={pensando}
+                title="Dictar consulta privada"
               />
               <button
                 onClick={handleSend}

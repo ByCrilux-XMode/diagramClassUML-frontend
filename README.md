@@ -102,6 +102,30 @@ y se registra como un turno humano nuevo con `revierteTurnoId`. Si falla a
 mitad, no se marca como reversión y los cambios aplicados quedan como un turno
 normal. `lib/actividad/reversion.ts` es la única puerta de esa reconstrucción.
 
+## Dictado por voz (STT)
+
+El botón de micrófono de los chats grupal, privado y de ayuda graba audio en el
+navegador y lo transcribe con el HF Space
+[`AlexSolizDuran/ia-voztotext`](https://huggingface.co/spaces/AlexSolizDuran/ia-voztotext).
+
+El navegador no llama al Space directamente (no tiene CORS): usa la ruta
+`POST /api/ia/transcribe`, que valida la sesión, aplica el límite de `/api/ia/*`
+y reenvía el `multipart/form-data` al Space. El texto devuelto se inserta en el
+campo del chat sin enviarlo automáticamente.
+
+| Variable | Defecto | Uso |
+|---|---|---|
+| `HF_STT_SPACE_URL` / `NEXT_PUBLIC_HF_STT_SPACE_URL` | `https://alexsolizduran-ia-voztotext.hf.space` | URL del microservicio STT. |
+| `IA_STT_TIMEOUT_MS` | `180000` | Tope del proxy; el Space puede tardar en despertar. |
+| `IA_STT_MAX_BYTES` | `20971520` (20 MB) | Tamaño máximo del audio subido. |
+| `IA_STT_MAX_DURACION_MS` / `NEXT_PUBLIC_IA_STT_MAX_DURACION_MS` | `60000` | Duración máxima de una grabación. En el navegador solo se inlinea la variante `NEXT_PUBLIC_*`. |
+
+El primer dictado puede tardar más porque el Space gratuito duerme por
+inactividad. Si se despliega en una plataforma con límite de duración por
+petición (por ejemplo Vercel), hay que ampliar ese límite para cubrir el
+arranque del Space. El micrófono solo funciona en `localhost` o bajo HTTPS,
+como exige `getUserMedia`.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

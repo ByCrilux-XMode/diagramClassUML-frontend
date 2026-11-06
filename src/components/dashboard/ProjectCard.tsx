@@ -24,6 +24,7 @@ export interface ProjectCardData {
   className2?: string;
   onDelete?: (id:number) => void; //aqui dira que hacer cuando se pulse el eliminar 
   onViewDetails?: (id:number) => void;
+  onManageVersions?: (id:number) => void;
   rol?: "CREADOR"|"EDITOR"|"LECTOR";
   deleting?: boolean;
 }
@@ -206,6 +207,16 @@ export default function ProjectCard({ data }: { data: ProjectCardData }) {
                 className="px-3 py-1.5 text-left font-code-sm text-code-sm text-on-surface hover:bg-surface-variant"
               >
                 Ver Detalles
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenu(false);
+                  data.onManageVersions?.(data.id);
+                }}
+                className="px-3 py-1.5 text-left font-code-sm text-code-sm text-on-surface hover:bg-surface-variant"
+              >
+                Versiones
               </button>
               <button
                 disabled={data.deleting}

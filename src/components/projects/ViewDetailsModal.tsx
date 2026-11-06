@@ -37,6 +37,7 @@ import {
 import type {
   Colaborador,
   Permiso,
+  Proyecto,
   RolProyecto,
   VersionProyecto,
 } from "@/types/proyecto";
@@ -51,6 +52,8 @@ interface ViewDetailsModalProps {
   nombreInicial: string;
   rol?: RolProyecto;
   onUpdated?: (nuevoNombre: string) => void;
+  /** Se invoca al restaurar una versión para refrescar el lienzo abierto. */
+  onVersionRestaurada?: (proyecto: Proyecto) => void;
   /** Si se indica, el modal muestra solo esa sección (accesos desde el editor). */
   solo?: "versiones" | "colaboradores";
 }
@@ -114,6 +117,7 @@ export default function ViewDetailsModal({
   nombreInicial,
   rol,
   onUpdated,
+  onVersionRestaurada,
   solo,
 }: ViewDetailsModalProps) {
   const [nombre, setNombre] = useState(nombreInicial);
@@ -194,7 +198,8 @@ export default function ViewDetailsModal({
   }, [nombreInicial]);
 
   useEffect(() => {
-    if (!open) return;
+    // En modo "solo versiones" no hace falta cargar colaboradores ni permisos.
+    if (!open || solo === "versiones") return;
     setColaboradores([]);
     setPendingPermisos({});
     setUsername("");
@@ -226,7 +231,7 @@ export default function ViewDetailsModal({
         showToast(m, "error");
       })
       .finally(() => setCargandoColab(false));
-  }, [open, proyectoId, esCreador]);
+  }, [open, proyectoId, esCreador, solo]);
 
   const totalPaginasVersiones = Math.max(
     1,
@@ -455,7 +460,8 @@ export default function ViewDetailsModal({
     setConfirmarEliminarId(null);
     setErrorVersiones(null);
     try {
-      await restaurarVersion(proyectoId, versionId);
+      const proyectoRestaurado = await restaurarVersion(proyectoId, versionId);
+      onVersionRestaurada?.(proyectoRestaurado);
       setConfirmarRestaurarId(null);
       setVersionDetalle(null);
       setMostrarJsonVersion(false);
@@ -474,7 +480,12 @@ export default function ViewDetailsModal({
         setCargandoVersiones(true);
         setPaginaVersiones(1);
       }
-      showToast("Versión restaurada — recarga el editor para verla", "success");
+      showToast(
+        onVersionRestaurada
+          ? "Versión restaurada — el editor se actualizó"
+          : "Versión restaurada — recarga el editor para verla",
+        "success"
+      );
     } catch (err: unknown) {
       const m = mensajeErrorVersiones(err, "restaurar");
       setErrorVersiones(m);

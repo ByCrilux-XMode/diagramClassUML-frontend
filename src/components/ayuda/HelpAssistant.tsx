@@ -13,6 +13,8 @@ import {
   listarPermisos,
 } from "@/lib/colaboradores";
 import type { HelpAiResult } from "@/lib/ia/helpPrompt";
+import { insertarDictado } from "@/lib/ia/stt";
+import { BotonDictado } from "@/components/chat/BotonDictado";
 
 type Msg = {
   id: string;
@@ -167,6 +169,7 @@ export default function HelpAssistant({ desplazado = false }: { desplazado?: boo
   const [iaOnline, setIaOnline] = useState<boolean | null>(null);
   const [locales, setLocales] = useState<ProyectoItem[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // En el editor la lista del store puede venir vacía: se pide al abrir para
   // que las herramientas (abrir proyecto, invitar colaborador) tengan datos.
@@ -487,6 +490,19 @@ export default function HelpAssistant({ desplazado = false }: { desplazado?: boo
     void pushUser(t);
   };
 
+  const aplicarDictado = (dictado: string) => {
+    const campo = inputRef.current;
+    const cursor = campo?.selectionStart ?? query.length;
+    const resultado = insertarDictado(query, dictado, cursor);
+    setQuery(resultado.texto);
+    if (selected) setSelected(null);
+    requestAnimationFrame(() => {
+      if (!campo) return;
+      campo.focus();
+      campo.setSelectionRange(resultado.cursor, resultado.cursor);
+    });
+  };
+
   const handleChip = (chip: string) => {
     setQuery(chip);
     void pushUser(chip);
@@ -666,6 +682,7 @@ export default function HelpAssistant({ desplazado = false }: { desplazado?: boo
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
             <input
+              ref={inputRef}
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -680,6 +697,12 @@ export default function HelpAssistant({ desplazado = false }: { desplazado?: boo
               className="w-full rounded-full border border-outline-variant bg-surface py-2 pl-8 pr-3 font-body-md text-body-md outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
             />
           </div>
+          <BotonDictado
+            onTexto={aplicarDictado}
+            disabled={aiBusy}
+            title="Dictar pregunta de ayuda"
+            redondo
+          />
           <button onClick={handleSend} disabled={aiBusy || !query.trim()} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-50" aria-label="Enviar">
             {aiBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
