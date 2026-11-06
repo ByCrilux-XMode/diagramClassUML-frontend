@@ -2,13 +2,14 @@
 
 import {
   AlertCircle,
-  Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Download,
-  History,
-  Pencil,
+  Eye,
+  EyeOff,
+  FileClock,
   Plus,
-  RefreshCw,
   RotateCcw,
   RotateCw,
   Save,
@@ -17,7 +18,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { actualizarProyecto, obtenerProyecto } from "@/lib/proyectos";
 import {
   actualizarPermisoColaborador,
@@ -28,13 +29,17 @@ import {
   listarPermisos,
 } from "@/lib/colaboradores";
 import {
-  actualizarVersion,
   eliminarVersion,
   listarVersiones,
+  obtenerVersion,
   restaurarVersion,
 } from "@/lib/versiones";
-import type { Colaborador, Permiso, RolProyecto } from "@/types/proyecto";
-import type { VersionProyecto } from "@/types/version";
+import type {
+  Colaborador,
+  Permiso,
+  RolProyecto,
+  VersionProyecto,
+} from "@/types/proyecto";
 import { parseEAXml, serializeEAXml } from "@/lib/xmi/ea";
 import ExportBackendModal from "../backend/ExportBackendModal";
 import type { UmlModelData } from "@/types/uml";
@@ -65,10 +70,41 @@ function etiquetaPermiso(permisoId: number): string {
   return permisoId === 2 ? "Editor" : "Visualizador / Lector";
 }
 
-function formatearFecha(fecha: string): string {
-  const date = new Date(fecha);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
+const LIMITE_VERSIONES = 10;
+
+function formatearFecha(iso?: string | null): string {
+  if (!iso) return "—";
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return iso;
+  return fecha.toLocaleString("es-ES", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function autorVersion(version: VersionProyecto): string {
+  const persona = version.creadoPor?.persona;
+  const nombreCompleto = `${persona?.nombre ?? ""} ${persona?.apellido ?? ""}`.trim();
+  return nombreCompleto || version.creadoPor?.username || "—";
+}
+
+function mensajeErrorVersiones(
+  err: unknown,
+  accion: "cargar" | "detalle" | "restaurar" | "eliminar"
+): string {
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  if (status === 401) return "Sesión expirada";
+  if (status === 403) return "Sin permiso (solo CREADOR/EDITOR)";
+  if (status === 404) {
+    return accion === "detalle" || accion === "eliminar"
+      ? "La versión no existe en este proyecto"
+      : "Proyecto o versión no encontrados";
+  }
+  if (status === 400) return "Datos inválidos";
+  if (accion === "detalle") return "No se pudo abrir la versión";
+  if (accion === "restaurar") return "No se pudo restaurar la versión";
+  if (accion === "eliminar") return "No se pudo eliminar la versión";
+  return "No se pudieron cargar las versiones";
 }
 
 export default function ViewDetailsModal({
@@ -85,6 +121,8 @@ export default function ViewDetailsModal({
   const [error, setError] = useState<string | null>(null);
 
   const esCreador = rol === "CREADOR";
+  const puedeEditarVersiones = rol === "CREADOR" || rol === "EDITOR";
+  const mostrarVersiones = solo !== "colaboradores";
   const [colaboradores, setColaboradores] = useState<Colaborador[]>([]);
   const [permisos, setPermisos] = useState<Permiso[]>([]);
   const [pendingPermisos, setPendingPermisos] = useState<Record<number, number>>({});
@@ -93,13 +131,17 @@ export default function ViewDetailsModal({
   const [cargandoColab, setCargandoColab] = useState(false);
   const [guardandoPermisos, setGuardandoPermisos] = useState(false);
   const [versiones, setVersiones] = useState<VersionProyecto[]>([]);
+  const [totalVersiones, setTotalVersiones] = useState(0);
+  const [paginaVersiones, setPaginaVersiones] = useState(1);
   const [cargandoVersiones, setCargandoVersiones] = useState(true);
   const [errorVersiones, setErrorVersiones] = useState<string | null>(null);
-  const [msgVersiones, setMsgVersiones] = useState<string | null>(null);
-  const [editandoVersionId, setEditandoVersionId] = useState<number | null>(null);
-  const [nombreVersion, setNombreVersion] = useState("");
-  const [versionOcupada, setVersionOcupada] = useState<number | null>(null);
-  const [confirmarVersionId, setConfirmarVersionId] = useState<number | null>(null);
+  const [versionDetalle, setVersionDetalle] = useState<VersionProyecto | null>(null);
+  const [cargandoDetalleId, setCargandoDetalleId] = useState<number | null>(null);
+  const [mostrarJsonVersion, setMostrarJsonVersion] = useState(false);
+  const [confirmarRestaurarId, setConfirmarRestaurarId] = useState<number | null>(null);
+  const [restaurandoId, setRestaurandoId] = useState<number | null>(null);
+  const [confirmarEliminarId, setConfirmarEliminarId] = useState<number | null>(null);
+  const [eliminandoId, setEliminandoId] = useState<number | null>(null);
   const [errorColabs, setErrorColabs] = useState<string | null>(null);
   const [msgColabs, setMsgColabs] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -148,12 +190,6 @@ export default function ViewDetailsModal({
   }, [errorVersiones]);
 
   useEffect(() => {
-    if (!msgVersiones) return;
-    const t = setTimeout(() => setMsgVersiones(null), 7000);
-    return () => clearTimeout(t);
-  }, [msgVersiones]);
-
-  useEffect(() => {
     setNombre(nombreInicial);
   }, [nombreInicial]);
 
@@ -192,29 +228,43 @@ export default function ViewDetailsModal({
       .finally(() => setCargandoColab(false));
   }, [open, proyectoId, esCreador]);
 
+  const totalPaginasVersiones = Math.max(
+    1,
+    Math.ceil(totalVersiones / LIMITE_VERSIONES)
+  );
+
+  const consultarVersiones = useCallback(
+    (pagina: number) => listarVersiones(proyectoId, pagina, LIMITE_VERSIONES),
+    [proyectoId]
+  );
+
   useEffect(() => {
-    if (!open || !esCreador) return;
-    let cancelled = false;
-    listarVersiones(proyectoId)
-      .then((lista) => {
-        if (!cancelled) setVersiones(lista);
+    if (!open || !mostrarVersiones) return;
+    let cancelado = false;
+    consultarVersiones(paginaVersiones)
+      .then((res) => {
+        if (cancelado) return;
+        setVersiones(res.datos ?? []);
+        setTotalVersiones(res.total ?? 0);
+        setErrorVersiones(null);
+        setCargandoVersiones(false);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
-        const s = (err as { response?: { status?: number } })?.response?.status;
-        let m = "Error al cargar versiones";
-        if (s === 401) m = "Sesión expirada";
-        else if (s === 403) m = "Solo el creador gestiona las versiones";
-        else if (s === 404) m = "No existe el proyecto";
-        setErrorVersiones(m);
-      })
-      .finally(() => {
-        if (!cancelled) setCargandoVersiones(false);
+        if (cancelado) return;
+        setErrorVersiones(mensajeErrorVersiones(err, "cargar"));
+        setCargandoVersiones(false);
       });
     return () => {
-      cancelled = true;
+      cancelado = true;
     };
-  }, [open, proyectoId, esCreador]);
+  }, [open, mostrarVersiones, paginaVersiones, consultarVersiones]);
+
+  const cambiarPaginaVersiones = (nuevaPagina: number) => {
+    const pagina = Math.min(Math.max(1, nuevaPagina), totalPaginasVersiones);
+    if (pagina === paginaVersiones) return;
+    setCargandoVersiones(true);
+    setPaginaVersiones(pagina);
+  };
 
   const handleActualizar = async () => {
     const trimmed = nombre.trim();
@@ -276,31 +326,6 @@ export default function ViewDetailsModal({
       showToast(m, "error");
     } finally {
       setCargandoColab(false);
-    }
-  };
-
-  const recargarVersiones = async () => {
-    if (cargandoVersiones) return;
-    setCargandoVersiones(true);
-    setErrorVersiones(null);
-    try {
-      const lista = await listarVersiones(proyectoId);
-      setVersiones(lista);
-      setEditandoVersionId(null);
-      setConfirmarVersionId(null);
-      const m = `Versiones recargadas (${lista.length})`;
-      setMsgVersiones(m);
-      showToast(m, "success");
-    } catch (err: unknown) {
-      const s = (err as { response?: { status?: number } })?.response?.status;
-      let m = "Error al cargar versiones";
-      if (s === 401) m = "Sesión expirada";
-      else if (s === 403) m = "Solo el creador gestiona las versiones";
-      else if (s === 404) m = "No existe el proyecto";
-      setErrorVersiones(m);
-      showToast(m, "error");
-    } finally {
-      setCargandoVersiones(false);
     }
   };
 
@@ -406,94 +431,101 @@ export default function ViewDetailsModal({
     }
   };
 
-  const mensajeErrorVersiones = (err: unknown, porDefecto: string): string => {
-    const s = (err as { response?: { status?: number } })?.response?.status;
-    if (s === 400) return "El proyecto todavía no tiene un diagrama";
-    if (s === 401) return "Sesión expirada";
-    if (s === 403) return "Solo el creador gestiona las versiones";
-    return porDefecto;
-  };
-
-  const handleRenombrarVersion = async (versionId: number) => {
-    const trimmed = nombreVersion.trim();
-    if (!trimmed) {
-      setErrorVersiones("Escribe un nombre para la versión");
+  const handleVerVersion = async (versionId: number) => {
+    if (versionDetalle?.versionId === versionId) {
+      setVersionDetalle(null);
+      setMostrarJsonVersion(false);
       return;
     }
-    if (trimmed.length > 100) {
-      setErrorVersiones("Máximo 100 caracteres");
-      return;
-    }
-    setVersionOcupada(versionId);
+    setCargandoDetalleId(versionId);
     setErrorVersiones(null);
-    setMsgVersiones(null);
     try {
-      const actualizada = await actualizarVersion(proyectoId, versionId, { nombre: trimmed });
-      setVersiones((prev) => prev.map((v) => (v.versionId === versionId ? actualizada : v)));
-      setEditandoVersionId(null);
-      setNombreVersion("");
-      setMsgVersiones("Versión renombrada");
-      showToast("Versión renombrada", "success");
+      const version = await obtenerVersion(proyectoId, versionId);
+      setVersionDetalle(version);
+      setMostrarJsonVersion(false);
     } catch (err: unknown) {
-      const m = mensajeErrorVersiones(err, "Error al renombrar la versión");
-      setErrorVersiones(m);
-      showToast(m, "error");
+      setErrorVersiones(mensajeErrorVersiones(err, "detalle"));
     } finally {
-      setVersionOcupada(null);
-    }
-  };
-
-  const handleActualizarSnapshot = async (versionId: number) => {
-    setVersionOcupada(versionId);
-    setErrorVersiones(null);
-    setMsgVersiones(null);
-    try {
-      const actualizada = await actualizarVersion(proyectoId, versionId, { actualizarSnapshot: true });
-      setVersiones((prev) => prev.map((v) => (v.versionId === versionId ? actualizada : v)));
-      setMsgVersiones("Versión actualizada con el diagrama actual");
-      showToast("Versión actualizada", "success");
-    } catch (err: unknown) {
-      const m = mensajeErrorVersiones(err, "Error al actualizar la versión");
-      setErrorVersiones(m);
-      showToast(m, "error");
-    } finally {
-      setVersionOcupada(null);
-    }
-  };
-
-  const handleEliminarVersion = async (versionId: number) => {
-    setVersionOcupada(versionId);
-    setErrorVersiones(null);
-    setMsgVersiones(null);
-    try {
-      await eliminarVersion(proyectoId, versionId);
-      setVersiones((prev) => prev.filter((v) => v.versionId !== versionId));
-      setConfirmarVersionId(null);
-      setMsgVersiones("Versión eliminada");
-      showToast("Versión eliminada", "success");
-    } catch (err: unknown) {
-      const m = mensajeErrorVersiones(err, "Error al eliminar la versión");
-      setErrorVersiones(m);
-      showToast(m, "error");
-    } finally {
-      setVersionOcupada(null);
+      setCargandoDetalleId(null);
     }
   };
 
   const handleRestaurarVersion = async (versionId: number) => {
-    setVersionOcupada(versionId);
+    setRestaurandoId(versionId);
+    setConfirmarEliminarId(null);
     setErrorVersiones(null);
-    setMsgVersiones(null);
     try {
       await restaurarVersion(proyectoId, versionId);
-      setMsgVersiones("Versión restaurada. Recarga el editor para verla.");
-      showToast("Versión restaurada", "success");
+      setConfirmarRestaurarId(null);
+      setVersionDetalle(null);
+      setMostrarJsonVersion(false);
+      if (paginaVersiones === 1) {
+        setCargandoVersiones(true);
+        try {
+          const res = await consultarVersiones(1);
+          setVersiones(res.datos ?? []);
+          setTotalVersiones(res.total ?? 0);
+        } catch {
+          setErrorVersiones("Versión restaurada, pero no se pudo recargar la lista");
+        } finally {
+          setCargandoVersiones(false);
+        }
+      } else {
+        setCargandoVersiones(true);
+        setPaginaVersiones(1);
+      }
+      showToast("Versión restaurada — recarga el editor para verla", "success");
     } catch (err: unknown) {
-      const m = mensajeErrorVersiones(err, "Error al restaurar la versión");
+      const m = mensajeErrorVersiones(err, "restaurar");
       setErrorVersiones(m);
       showToast(m, "error");
     } finally {
-      setVersionOcupada(null);
+      setRestaurandoId(null);
+    }
+  };
+
+  const handleEliminarVersion = async (versionId: number) => {
+    setEliminandoId(versionId);
+    setConfirmarRestaurarId(null);
+    setErrorVersiones(null);
+    try {
+      await eliminarVersion(proyectoId, versionId);
+      setConfirmarEliminarId(null);
+      if (versionDetalle?.versionId === versionId) {
+        setVersionDetalle(null);
+        setMostrarJsonVersion(false);
+      }
+
+      // Si la página actual queda vacía, retroceder una página.
+      const totalRestante = Math.max(0, totalVersiones - 1);
+      const paginasRestantes = Math.max(
+        1,
+        Math.ceil(totalRestante / LIMITE_VERSIONES)
+      );
+      const paginaDestino = Math.min(paginaVersiones, paginasRestantes);
+
+      if (paginaDestino !== paginaVersiones) {
+        setCargandoVersiones(true);
+        setPaginaVersiones(paginaDestino);
+      } else {
+        setCargandoVersiones(true);
+        try {
+          const res = await consultarVersiones(paginaDestino);
+          setVersiones(res.datos ?? []);
+          setTotalVersiones(res.total ?? 0);
+        } catch {
+          setErrorVersiones("Versión eliminada, pero no se pudo recargar la lista");
+        } finally {
+          setCargandoVersiones(false);
+        }
+      }
+      showToast("Versión eliminada", "success");
+    } catch (err: unknown) {
+      const m = mensajeErrorVersiones(err, "eliminar");
+      setErrorVersiones(m);
+      showToast(m, "error");
+    } finally {
+      setEliminandoId(null);
     }
   };
 
@@ -929,162 +961,224 @@ export default function ViewDetailsModal({
           </section>
           )}
 
-          {esCreador && solo !== "colaboradores" && (
+          {mostrarVersiones && (
             <section className="flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-2 border-b border-outline-variant/30 pb-1">
+              <div className="flex items-center justify-between border-b border-outline-variant/30 pb-1">
                 <div className="flex items-center gap-2">
-                  <History className="h-4 w-4 text-primary" />
+                  <FileClock className="h-3.5 w-3.5 text-on-surface-variant" />
                   <h3 className="font-class-name text-[12px] font-bold uppercase tracking-wider text-on-surface">
                     Versiones
                   </h3>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-code-sm text-code-sm text-on-surface-variant">
-                    {versiones.length} versiones
-                  </span>
-                  <button
-                    onClick={recargarVersiones}
-                    disabled={cargandoVersiones}
-                    className="flex items-center gap-1 rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface-variant transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
-                    title="Volver a cargar la lista de versiones"
-                  >
-                    <RotateCw
-                      className={`h-3.5 w-3.5 ${cargandoVersiones ? "animate-spin" : ""}`}
-                    />
-                    Cargar
-                  </button>
-                </div>
+                <span className="font-code-sm text-code-sm text-on-surface-variant">
+                  {totalVersiones} en total
+                </span>
               </div>
 
-              <p className="font-code-sm text-[12px] text-on-surface-variant">
-                Guarda copias del diagrama y restaura o elimina las que ya no necesites.
-              </p>
-
-              {cargandoVersiones ? (
-                <p className="font-code-sm text-code-sm text-on-surface-variant">Cargando...</p>
+              {cargandoVersiones && versiones.length === 0 ? (
+                <p className="font-code-sm text-code-sm text-on-surface-variant">
+                  Cargando versiones...
+                </p>
               ) : versiones.length === 0 ? (
                 <p className="font-code-sm text-code-sm text-on-surface-variant">
                   Todavía no hay versiones guardadas.
                 </p>
               ) : (
                 <div className="flex flex-col divide-y divide-outline-variant/30 rounded border border-outline-variant/40 bg-surface-container-lowest">
-                  {versiones.map((version) => (
-                    <div key={version.versionId} className="flex flex-col gap-2 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          {editandoVersionId === version.versionId ? (
-                            <div className="flex items-center gap-2">
-                              <input
-                                value={nombreVersion}
-                                maxLength={100}
-                                onChange={(e) => setNombreVersion(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") handleRenombrarVersion(version.versionId);
-                                  if (e.key === "Escape") {
-                                    setEditandoVersionId(null);
-                                    setNombreVersion("");
-                                  }
-                                }}
-                                autoFocus
-                                className="min-w-0 flex-1 rounded border border-outline-variant bg-surface-container-lowest px-2 py-1 font-code-sm text-code-sm text-on-surface focus:border-primary focus:outline-none"
-                              />
+                  {versiones.map((version) => {
+                    const abierta = versionDetalle?.versionId === version.versionId;
+                    const modelo = esquemaToModel(
+                      abierta && versionDetalle
+                        ? versionDetalle.esquemaJson
+                        : version.esquemaJson
+                    );
+                    const confirmandoRestaurar =
+                      confirmarRestaurarId === version.versionId;
+                    const confirmandoEliminar =
+                      confirmarEliminarId === version.versionId;
+                    const ocupado =
+                      restaurandoId === version.versionId ||
+                      eliminandoId === version.versionId;
+                    return (
+                      <div key={version.versionId} className="flex flex-col">
+                        <div className="flex items-start justify-between gap-3 p-3">
+                          <div className="min-w-0">
+                            <p className="truncate font-class-name text-class-name leading-snug text-on-surface">
+                              {version.nombre}
+                            </p>
+                            <p className="truncate font-code-sm text-[11px] text-on-surface-variant">
+                              {formatearFecha(version.creadaEn)} · {autorVersion(version)}
+                            </p>
+                            {version.descripcion && (
+                              <p className="mt-1 break-words font-code-sm text-[12px] text-on-surface-variant">
+                                {version.descripcion}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleVerVersion(version.versionId)}
+                              className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface"
+                              title={abierta ? "Ocultar versión" : "Ver versión"}
+                            >
+                              {cargandoDetalleId === version.versionId ? (
+                                <span className="block h-[18px] w-[18px] animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
+                              ) : abierta ? (
+                                <EyeOff className="h-[18px] w-[18px]" />
+                              ) : (
+                                <Eye className="h-[18px] w-[18px]" />
+                              )}
+                            </button>
+
+                            {puedeEditarVersiones &&
+                              !confirmandoRestaurar &&
+                              !confirmandoEliminar && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      setConfirmarEliminarId(null);
+                                      setConfirmarRestaurarId(version.versionId);
+                                    }}
+                                    className="flex items-center gap-1 rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:border-primary hover:bg-surface-variant"
+                                    title="Restaurar esta versión"
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                    Restaurar
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setConfirmarRestaurarId(null);
+                                      setConfirmarEliminarId(version.versionId);
+                                    }}
+                                    className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-error"
+                                    title="Eliminar versión"
+                                    aria-label={`Eliminar versión ${version.nombre}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </>
+                              )}
+
+                            {puedeEditarVersiones && confirmandoRestaurar && (
+                              <>
+                                <button
+                                  onClick={() => handleRestaurarVersion(version.versionId)}
+                                  disabled={ocupado}
+                                  className="rounded bg-primary px-2.5 py-1 font-code-sm text-[11px] text-on-primary transition-colors hover:bg-on-primary-fixed-variant disabled:opacity-50"
+                                >
+                                  {restaurandoId === version.versionId
+                                    ? "Restaurando..."
+                                    : "Confirmar restauración"}
+                                </button>
+                                <button
+                                  onClick={() => setConfirmarRestaurarId(null)}
+                                  disabled={ocupado}
+                                  className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                                >
+                                  Cancelar
+                                </button>
+                              </>
+                            )}
+
+                            {puedeEditarVersiones && confirmandoEliminar && (
+                              <>
+                                <button
+                                  onClick={() => handleEliminarVersion(version.versionId)}
+                                  disabled={ocupado}
+                                  className="rounded bg-error px-2.5 py-1 font-code-sm text-[11px] text-on-error transition-colors hover:bg-error/90 disabled:opacity-50"
+                                >
+                                  {eliminandoId === version.versionId
+                                    ? "Eliminando..."
+                                    : "Eliminar"}
+                                </button>
+                                <button
+                                  onClick={() => setConfirmarEliminarId(null)}
+                                  disabled={ocupado}
+                                  className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                                >
+                                  Cancelar
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {abierta && versionDetalle && (
+                          <div className="border-t border-outline-variant/30 bg-surface-container-low px-3 py-2.5">
+                            <div className="grid grid-cols-2 gap-2 font-code-sm text-[11px] text-on-surface-variant sm:grid-cols-4">
+                              <div>
+                                <span className="block text-outline">Versión</span>
+                                #{versionDetalle.versionId}
+                              </div>
+                              <div>
+                                <span className="block text-outline">Nodos</span>
+                                {modelo.nodes.length}
+                              </div>
+                              <div>
+                                <span className="block text-outline">Aristas</span>
+                                {modelo.links.length}
+                              </div>
+                              <div>
+                                <span className="block text-outline">Creada</span>
+                                {formatearFecha(versionDetalle.creadaEn)}
+                              </div>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <p className="font-code-sm text-[12px] text-on-surface-variant">
+                                Autor: {autorVersion(versionDetalle)}
+                              </p>
                               <button
-                                onClick={() => handleRenombrarVersion(version.versionId)}
-                                disabled={versionOcupada === version.versionId}
-                                className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-primary disabled:opacity-50"
-                                title="Guardar nombre"
+                                onClick={() => setMostrarJsonVersion((prev) => !prev)}
+                                className="rounded border border-outline-variant px-2 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant"
                               >
-                                <Check className="h-[18px] w-[18px]" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setEditandoVersionId(null);
-                                  setNombreVersion("");
-                                }}
-                                className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface"
-                                title="Cancelar"
-                              >
-                                <X className="h-[18px] w-[18px]" />
+                                {mostrarJsonVersion ? "Ocultar JSON" : "Ver JSON"}
                               </button>
                             </div>
-                          ) : (
-                            <>
-                              <p className="truncate font-class-name text-class-name leading-snug text-on-surface">
-                                {version.nombre}
-                              </p>
-                              <span className="truncate font-code-sm text-[11px] text-on-surface-variant">
-                                {formatearFecha(version.fecha)}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            onClick={() => handleRestaurarVersion(version.versionId)}
-                            disabled={versionOcupada === version.versionId}
-                            className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-primary disabled:opacity-50"
-                            title="Restaurar esta versión"
-                          >
-                            <RotateCcw className="h-[18px] w-[18px]" />
-                          </button>
-                          <button
-                            onClick={() => handleActualizarSnapshot(version.versionId)}
-                            disabled={versionOcupada === version.versionId}
-                            className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-primary disabled:opacity-50"
-                            title="Sobrescribir con el diagrama actual"
-                          >
-                            <RefreshCw className="h-[18px] w-[18px]" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditandoVersionId(version.versionId);
-                              setNombreVersion(version.nombre);
-                            }}
-                            className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface"
-                            title="Renombrar versión"
-                          >
-                            <Pencil className="h-[18px] w-[18px]" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmarVersionId(version.versionId)}
-                            className="rounded p-1.5 text-outline transition-colors hover:bg-surface-variant hover:text-error"
-                            title="Eliminar versión"
-                          >
-                            <Trash2 className="h-[18px] w-[18px]" />
-                          </button>
-                        </div>
+                            {mostrarJsonVersion && (
+                              <pre className="mt-2 max-h-40 overflow-auto rounded border border-outline-variant/60 bg-surface-container-lowest p-2 font-code-sm text-[11px] leading-relaxed text-on-surface">
+                                {JSON.stringify(versionDetalle.esquemaJson ?? {}, null, 2)}
+                              </pre>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      {confirmarVersionId === version.versionId && (
-                        <div className="flex flex-wrap items-center justify-end gap-2 rounded border border-error/20 bg-error-container/20 px-2 py-1.5">
-                          <span className="font-code-sm text-[11px] text-error">
-                            ¿Eliminar “{version.nombre}”?
-                          </span>
-                          <button
-                            onClick={() => handleEliminarVersion(version.versionId)}
-                            disabled={versionOcupada === version.versionId}
-                            className="rounded bg-error px-2.5 py-1 font-code-sm text-[11px] text-on-error transition-colors hover:bg-error/90 disabled:opacity-50"
-                          >
-                            Eliminar
-                          </button>
-                          <button
-                            onClick={() => setConfirmarVersionId(null)}
-                            className="rounded border border-outline-variant px-2.5 py-1 font-code-sm text-[11px] text-on-surface transition-colors hover:bg-surface-variant"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
               {errorVersiones && (
                 <p className="font-code-sm text-code-sm text-error">{errorVersiones}</p>
               )}
-              {msgVersiones && (
-                <p className="font-code-sm text-code-sm" style={{ color: "#0d5d2e" }}>
-                  {msgVersiones}
+
+              {totalVersiones > LIMITE_VERSIONES && (
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    onClick={() => cambiarPaginaVersiones(paginaVersiones - 1)}
+                    disabled={paginaVersiones <= 1 || cargandoVersiones}
+                    className="flex items-center gap-1 rounded border border-outline-variant px-2.5 py-1 font-code-sm text-code-sm text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Anterior
+                  </button>
+                  <span className="font-code-sm text-code-sm text-on-surface-variant">
+                    Página {paginaVersiones} de {totalPaginasVersiones}
+                  </span>
+                  <button
+                    onClick={() => cambiarPaginaVersiones(paginaVersiones + 1)}
+                    disabled={paginaVersiones >= totalPaginasVersiones || cargandoVersiones}
+                    className="flex items-center gap-1 rounded border border-outline-variant px-2.5 py-1 font-code-sm text-code-sm text-on-surface transition-colors hover:bg-surface-variant disabled:opacity-50"
+                  >
+                    Siguiente
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+
+              {puedeEditarVersiones && (
+                <p className="font-code-sm text-[11px] text-on-surface-variant">
+                  Restaurar reemplaza el esquema actual del proyecto (recarga el editor
+                  para verlo). Eliminar solo borra la versión del historial.
                 </p>
               )}
             </section>
