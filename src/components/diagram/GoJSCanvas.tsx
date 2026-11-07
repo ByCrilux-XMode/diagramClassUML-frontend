@@ -48,6 +48,7 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
   const [activeRelation, setActiveRelation] = useState<UMLRelationType | null>(null);
   const [, forceRender] = useReducer((x: number) => x + 1, 0);
   const [pendingPickerKey, setPendingPickerKey] = useState<string | number | null>(null);
+  const [tokenColaboracion, setTokenColaboracion] = useState<string | null | undefined>(undefined);
 
   const activeRelationRef = useRef<UMLRelationType | null>(null);
   const pendingSetterRef = useRef<(k: string | number | null) => void>(() => {});
@@ -79,6 +80,27 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
     pendingSetterRef.current = setPendingPickerKey;
   }, []);
 
+  // Ticket corto para el WebSocket: la cookie first-party no viaja al host del
+  // backend en el handshake, así que se pide al proxy same-origin.
+  useEffect(() => {
+    if (!proyectoId) {
+      setTokenColaboracion(null);
+      return;
+    }
+    let cancelado = false;
+    fetch("/api/colaboracion/ticket", { cache: "no-store", credentials: "include" })
+      .then((respuesta) => (respuesta.ok ? respuesta.json() : null))
+      .then((datos: { token?: string } | null) => {
+        if (!cancelado) setTokenColaboracion(datos?.token ?? null);
+      })
+      .catch(() => {
+        if (!cancelado) setTokenColaboracion(null);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [proyectoId]);
+
   // La sesión colaborativa (Yjs) se monta cuando existe el diagrama.
   const { estado: estadoColaboracion, esperarPersistenciaServidor, actualizarCursor, actualizarDragging, actualizarTempLink } = useColaboracion({
     proyectoId: proyectoId ?? null,
@@ -87,6 +109,7 @@ const GoJSCanvas = forwardRef<GoJSCanvasHandle, GoJSCanvasProps>(function GoJSCa
     readOnly,
     nombreUsuario,
     usuarioId,
+    tokenColaboracion,
     reAplicarTemplates: () => {
       const diagram = diagramInstance.current;
       if (!diagram) return;
