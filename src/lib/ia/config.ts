@@ -172,3 +172,24 @@ export const IA_HELP_MODEL =
   process.env.NEXT_PUBLIC_IA_HELP_MODEL?.trim() ||
   process.env.IA_HELP_MODEL?.trim() ||
   OPENROUTER_DEFAULT_MODEL;
+
+/**
+ * Speech-to-text (HF Space `AlexSolizDuran/ia-voztotext`).
+ *
+ * El navegador nunca llama al Space directamente: usa el proxy
+ * `/api/ia/transcribe` para evitar CORS y validar la sesión. El Space duerme
+ * por inactividad, por eso el timeout es amplio y el mensaje de error avisa
+ * de que puede estar iniciándose.
+ */
+export const HF_STT_SPACE_URL =
+  process.env.NEXT_PUBLIC_HF_STT_SPACE_URL?.trim() ||
+  process.env.HF_STT_SPACE_URL?.trim() ||
+  "https://alexsolizduran-ia-voztotext.hf.space";
+export const IA_STT_TIMEOUT_MS = Number(process.env.IA_STT_TIMEOUT_MS ?? "180000");
+export const IA_STT_MAX_BYTES = Number(
+  process.env.IA_STT_MAX_BYTES ?? String(20 * 1024 * 1024),
+);
+/** Duración máxima de una grabación de dictado. */
+export const IA_STT_MAX_DURACION_MS = Number(
+  process.env.NEXT_PUBLIC_IA_STT_MAX_DURACION_MS ?? process.env.IA_STT_MAX_DURACION_MS ?? "60000",
+);

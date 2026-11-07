@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileClock, Users } from "lucide-react";
+import { FileClock, History, Users } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import DiagramEditor from "./DiagramEditor";
@@ -45,7 +45,7 @@ export default function EditorPage() {
     usuarios: 1,
     remoteUsers: [],
   });
-  const [colaboradoresAbierto, setColaboradoresAbierto] = useState(false);
+  const [seccionModal, setSeccionModal] = useState<"colaboradores" | "versiones" | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -112,6 +112,11 @@ export default function EditorPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleVersionRestaurada = (proyectoRestaurado: Proyecto) => {
+    setProyecto(proyectoRestaurado);
+    canvasRef.current?.setJson(proyectoRestaurado.esquemaJson ?? null);
   };
 
   const abrirModalVersion = () => {
@@ -215,6 +220,15 @@ export default function EditorPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSeccionModal("versiones")}
+            disabled={loading}
+            className="flex items-center gap-1.5 rounded border border-outline-variant bg-surface-container-lowest px-3 py-1.5 font-badge-label text-badge-label font-bold uppercase tracking-wider text-on-surface transition-colors hover:border-primary hover:bg-surface-variant disabled:opacity-50"
+            title="Gestionar versiones del diagrama"
+          >
+            <History className="h-4 w-4" />
+            Versiones
+          </button>
           {puedeEditar && (
             <button
               onClick={abrirModalVersion}
@@ -236,7 +250,7 @@ export default function EditorPage() {
             </button>
           )}
           <button
-            onClick={() => setColaboradoresAbierto(true)}
+            onClick={() => setSeccionModal("colaboradores")}
             disabled={loading}
             className="flex items-center gap-1.5 rounded bg-secondary px-4 py-1.5 font-badge-label text-badge-label font-bold uppercase tracking-wider text-white transition-opacity hover:bg-secondary/90 disabled:opacity-50"
             title="Gestionar colaboradores del proyecto"
@@ -374,12 +388,13 @@ export default function EditorPage() {
       )}
 
       <ViewDetailsModal
-        open={colaboradoresAbierto}
-        onClose={() => setColaboradoresAbierto(false)}
+        open={seccionModal !== null}
+        onClose={() => setSeccionModal(null)}
         proyectoId={Number(id)}
         nombreInicial={proyecto?.nombre ?? ""}
         rol={(rol as RolProyecto | null) ?? undefined}
-        solo="colaboradores"
+        solo={seccionModal ?? undefined}
+        onVersionRestaurada={handleVersionRestaurada}
       />
 
       {/* Chat de ayuda sobre la web (no sobre el diagrama). */}

@@ -6,6 +6,8 @@ import { useChat } from "@/hooks/useChat";
 import type { UsuarioChat } from "@/hooks/useChat";
 import type { MensajeChat } from "@/lib/chat/api";
 import { insertarMencion } from "@/lib/chat/mencion";
+import { insertarDictado } from "@/lib/ia/stt";
+import { BotonDictado } from "./BotonDictado";
 import { TarjetaSuceso } from "./TarjetaSuceso";
 
 interface ChatGrupalProps {
@@ -104,6 +106,18 @@ export function ChatGrupal({ proyectoId, usuario, puedeEditar, onMencionIA, onVe
     });
   };
 
+  const aplicarDictado = (dictado: string) => {
+    const area = areaRef.current;
+    const cursor = area?.selectionStart ?? texto.length;
+    const resultado = insertarDictado(texto, dictado, cursor);
+    setTexto(resultado.texto);
+    requestAnimationFrame(() => {
+      if (!area) return;
+      area.focus();
+      area.setSelectionRange(resultado.cursor, resultado.cursor);
+    });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div ref={listaRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
@@ -164,6 +178,11 @@ export function ChatGrupal({ proyectoId, usuario, puedeEditar, onMencionIA, onVe
           >
             <AtSign className="h-4 w-4" />
           </button>
+          <BotonDictado
+            onTexto={aplicarDictado}
+            disabled={enviando}
+            title="Dictar mensaje al grupo"
+          />
           <textarea
             ref={areaRef}
             value={texto}

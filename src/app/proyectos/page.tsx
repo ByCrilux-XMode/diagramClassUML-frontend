@@ -34,6 +34,7 @@ export default function ProyectosDashboard() {
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [viewId, setViewId] = useState<number | null>(null);
+  const [viewSection, setViewSection] = useState<"versiones" | undefined>();
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
   const cargar = useCallback(async () => {
@@ -80,7 +81,14 @@ export default function ProyectosDashboard() {
     rol: p.rol,
     deleting: deletingId === p.proyectoId,
     onDelete: (id) => setConfirmId(id as number),
-    onViewDetails: (id) => setViewId(id as number),
+    onViewDetails: (id) => {
+      setViewSection(undefined);
+      setViewId(id as number);
+    },
+    onManageVersions: (id) => {
+      setViewSection("versiones");
+      setViewId(id as number);
+    },
   });
 
   const handleDelete = async (id: number) => {
@@ -267,9 +275,13 @@ export default function ProyectosDashboard() {
       {viewId !== null && (
         <ViewDetailsModal
         open={viewId !== null} 
-        onClose={() => setViewId(null)} 
+        onClose={() => {
+          setViewId(null);
+          setViewSection(undefined);
+        }} 
         proyectoId={viewId} 
         rol={dataCache.find(p => p.proyectoId===viewId)?.rol}
+        solo={viewSection}
         nombreInicial={dataCache.find(p => p.proyectoId===viewId)?.nombre ?? ""}
         onUpdated={(nuevoNombre)=>{
         setDataCache(prev=>prev.map(p=>p.proyectoId===viewId?{...p,nombre:nuevoNombre}:p));
