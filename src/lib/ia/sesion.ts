@@ -47,12 +47,21 @@ export function claveSesion(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function baseUrlDeEntorno(): string {
-  return (
-    process.env.NEXT_PUBLIC_BASE_URL?.trim() ||
-    process.env.BASE_URL?.trim() ||
-    "http://localhost:3000"
-  ).replace(/\/+$/, "");
+/**
+ * Backend absoluto para las llamadas server-side (guardia de sesión y tickets).
+ *
+ * No se usa `NEXT_PUBLIC_API_URL` porque en el navegador apunta al proxy
+ * relativo `/backend`; aquí se necesita una URL absoluta para `fetch` en Node.
+ */
+export function baseUrlBackend(): string {
+  const candidatas = [
+    process.env.BACKEND_URL,
+    process.env.BASE_URL,
+    process.env.NEXT_PUBLIC_BASE_URL,
+  ]
+    .map((valor) => valor?.trim())
+    .filter((valor): valor is string => typeof valor === "string" && /^https?:\/\//i.test(valor));
+  return (candidatas[0] ?? "http://localhost:3000").replace(/\/+$/, "");
 }
 
 function leerToken(request: Pick<NextRequest, "cookies">): string | null {
@@ -120,7 +129,7 @@ export async function leerSesion(
     return cacheada.usuario;
   }
 
-  const baseUrl = (opciones.baseUrl ?? baseUrlDeEntorno()).replace(/\/+$/, "");
+  const baseUrl = (opciones.baseUrl ?? baseUrlBackend()).replace(/\/+$/, "");
   const timeoutMs = opciones.timeoutMs ?? SESION_TIMEOUT_MS;
   const fetchImpl = opciones.fetchImpl ?? fetch;
   const controller = new AbortController();

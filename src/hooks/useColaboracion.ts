@@ -75,6 +75,9 @@ export interface UseColaboracionArgs {
   readOnly: boolean;
   nombreUsuario?: string;
   usuarioId?: number;
+  /** Ticket corto para autenticar el WebSocket (first-party vía proxy).
+   *  `undefined` = todavía se está pidiendo; `null` = no se pudo obtener. */
+  tokenColaboracion?: string | null | undefined;
   reAplicarTemplates?: () => void;
   onEstado?: (estado: EstadoColaboracion) => void;
 }
@@ -86,6 +89,7 @@ export function useColaboracion({
   readOnly,
   nombreUsuario,
   usuarioId,
+  tokenColaboracion,
   reAplicarTemplates,
   onEstado,
 }: UseColaboracionArgs) {
@@ -122,7 +126,20 @@ export function useColaboracion({
   });
 
   useEffect(() => {
-    if (!proyectoId) return;
+    // El ticket no llegó (sin sesión o backend caído): no habrá socket, así que
+    // no dejamos la UI en "conectando" para siempre.
+    if (proyectoId && tokenColaboracion === null) {
+      setEstado((previo) =>
+        previo.conexion === "desconectado" && !previo.synced
+          ? previo
+          : { ...previo, conexion: "desconectado", synced: false },
+      );
+    }
+  }, [proyectoId, tokenColaboracion]);
+
+  useEffect(() => {
+    // Sin ticket no se abre el socket: evita conexiones anónimas al backend.
+    if (!proyectoId || !tokenColaboracion) return;
 
     const doc = new Y.Doc();
     const mapa = doc.getMap<unknown>(CLAVE_ESQUEMA); //esquema
@@ -337,7 +354,7 @@ export function useColaboracion({
       String(proyectoId),
       doc,
       {
-        WebSocketPolyfill: crearSocketColaboracion(String(proyectoId)),
+        WebSocketPolyfill: crearSocketColaboracion(String(proyectoId), tokenColaboracion),
         maxBackoffTime: 4000,
       }
     );
@@ -440,7 +457,7 @@ export function useColaboracion({
       provider.destroy();
       doc.destroy();
     };
-  }, [proyectoId]);
+  }, [proyectoId, tokenColaboracion]);
 
   const esperarPersistenciaServidor = useCallback(async () => {
     const falta =

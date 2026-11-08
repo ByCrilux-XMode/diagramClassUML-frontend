@@ -89,11 +89,39 @@ caché. El navegador nunca ve las API keys ni el JWT.
 |---|---|---|
 | `IA_LIMITE_CHAT_MINUTO` | `20` | Peticiones al proxy por usuario y minuto. `0` desactiva el cubo. |
 | `IA_LIMITE_CHAT_HORA` | `200` | Peticiones al proxy por usuario y hora. `0` desactiva el cubo. |
-| `BASE_URL` / `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backend usado para validar la sesión. |
+| `BACKEND_URL` | `http://localhost:3000` | Backend absoluto para el proxy `/backend`, la guardia de sesión y el ticket de colaboración. |
+| `NEXT_PUBLIC_API_URL` | `/backend` | Base same-origin que usa el navegador para que la cookie `tokenAcceso` sea first-party. |
+| `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | URL absoluta del backend para el WebSocket de colaboración y el `HTTP-Referer`. |
 
 El proxy responde 429 con `Retry-After` cuando se agota un cubo. Nest mantiene
 el límite autoritativo de turnos (`IA_LIMITE_TURNOS_MINUTO`, 10 por usuario y
 proyecto) antes de validar el permiso y de crear el turno.
+
+### Sesión same-origin (proxy `/backend`)
+
+El navegador no llama al backend directamente: usa `/backend/*`, que
+`next.config.ts` reescribe a `BACKEND_URL`. Así la cookie `tokenAcceso` que
+emite Nest queda guardada en el dominio del frontend (first-party), la ven
+`/api/ia/*` y `src/proxy.ts`, y funciona en Brave y en incógnito. Antes la
+cookie vivía en el dominio del backend y esas peticiones llegaban sin cookie.
+
+El WebSocket de colaboración no puede llevar cookies entre orígenes, así que el
+editor pide un ticket corto a `/api/colaboracion/ticket` (que lee la cookie en
+servidor y llama a `GET /auth/ticket-colaboracion`) y lo adjunta como `?token=`.
+
+En Vercel, configurar:
+
+| Proyecto | Variable | Valor |
+|---|---|---|
+| Frontend | `BACKEND_URL` | URL pública del backend |
+| Frontend | `NEXT_PUBLIC_API_URL` | `/backend` |
+| Frontend | `NEXT_PUBLIC_BASE_URL` | URL pública del backend (WebSocket y respaldo del `HTTP-Referer`) |
+| Backend | `COOKIE_DOMAIN` | vacío (con el proxy la cookie es host-only) |
+| Backend | `COOKIE_SECURE` | `true` |
+| Backend | `CORS_ORIGIN` | URL del frontend |
+
+`vercel.app` es un sufijo público: dos proyectos `*.vercel.app` no pueden
+compartir cookies. Por eso el proxy es la vía soportada.
 
 La pestaña **Actividad** ofrece deshacer el último turno de IA solo a CREADOR y
 EDITOR y solo cuando el servidor devuelve `deshacible: true`. La reversión se
