@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import type { IAChatMessage, IAProvider, IAToolDef } from "@/lib/ia/types";
 import { getAdapter, isValidProvider } from "@/lib/ia/adapters";
 import { guardiaIA } from "@/lib/ia/guardia";
-import { IA_DEFAULT_MODEL, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
+import { IA_DEFAULT_MODEL, IA_HF_SPACE_MODEL, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
 
 /**
  * Modelo que se manda al proveedor. El navegador solo ve las claves
@@ -22,7 +22,10 @@ function resolverModelo(provider: IAProvider, solicitado: string): string {
     if (modelo === "" || !modelo.includes("/")) return IA_DEFAULT_MODEL;
     return modelo;
   }
-  // hf-space y ollama ignoran el nombre del modelo: basta con no mandarlo vacío.
+  // hf-space usa el ID del Space propio por defecto (`piloto-qwen2.5coder`);
+  // el adaptador resuelve ese ID a la URL del Space correspondiente.
+  if (provider === "hf-space") return modelo || IA_HF_SPACE_MODEL;
+  // ollama ignora el nombre del modelo: basta con no mandarlo vacío.
   return modelo || IA_DEFAULT_MODEL;
 }
 

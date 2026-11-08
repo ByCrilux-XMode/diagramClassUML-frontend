@@ -1,6 +1,23 @@
-import { HF_SPACE_URL, IA_CHAT_TIMEOUT_MS } from "@/lib/ia/config";
+import {
+  HF_SPACE_MODELOS,
+  HF_SPACE_PROPIO_URL,
+  IA_CHAT_TIMEOUT_MS,
+  IA_HF_SPACE_DSL,
+  IA_HF_SPACE_DSL_MAX_TOKENS,
+  IA_HF_SPACE_MODEL,
+  resolverSpaceHf,
+} from "@/lib/ia/config";
+import { diffDiagrama } from "@/lib/ia/dsl/diff";
+import { construirMensajesDsl, extraerSnapshot, pedirBorrado } from "@/lib/ia/dsl/prompt";
+import type { MensajeDsl } from "@/lib/ia/dsl/prompt";
+import { proyectarDiagrama } from "@/lib/ia/dsl/project";
+import { extraerJson } from "@/lib/ia/dsl/repair";
+import { toToolCalls } from "@/lib/ia/dsl/toToolCalls";
+import { validarSalida } from "@/lib/ia/dsl/validate";
+import type { DiagramaCanonico } from "@/lib/ia/dsl/canonical";
 import type {
   HealthResult,
+  IAChatMessage,
   IAChatRequestBody,
   IAChatResponse,
   IAToolCall,
@@ -8,7 +25,8 @@ import type {
 } from "@/lib/ia/types";
 
 // HF Space (deploy/hf-space) expone POST /generate {mensajes, temperatura, top_p, max_tokens} -> {texto}
-// y GET /health. Es público sin token (CHRISTS20/qwn-uml-space).
+// y GET /health. Cada modelo del selector resuelve su propia base con
+// `resolverSpaceHf` (por defecto, el Space propio `piloto-qwen2.5coder`).
 
 async function fetchWithTimeout(
   url: string,
@@ -179,7 +197,7 @@ export function parseTextoToToolCalls(texto: string): IAToolCall[] {
 }
 
 export async function health(): Promise<HealthResult> {
-  const base = HF_SPACE_URL.replace(/\/+$/, "");
+  const base = resolverSpaceHf(IA_HF_SPACE_MODEL).url.replace(/\/+$/, "");
   try {
     const res = await fetchWithTimeout(`${base}/health`, {}, 5000);
     if (!res.ok) return { ok: false, error: `HF Space respondió HTTP ${res.status}.` };
@@ -192,12 +210,42 @@ export async function health(): Promise<HealthResult> {
 }
 
 export async function listModels(): Promise<string[]> {
-  // Space expone un único modelo LoRA; devolver lista estática para el selector.
-  return ["CHRISTS20/qwn-uml-lora-7b-v2", "Qwen/Qwen2.5-Coder-7B-Instruct"];
+  // Cada ID resuelve a un Space distinto en `chat`; el primero es el propio.
+  return HF_SPACE_MODELOS.map((entrada) => entrada.id);
 }
 
-export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
-  const base = HF_SPACE_URL.replace(/\/+$/, "");
+interface RespuestaGenerate {
+  texto: string;
+}
+
+async function pedirGenerate(
+  url: string,
+  mensajes: MensajeDsl[],
+  maxTokens: number,
+): Promise<RespuestaGenerate> {
+  const payload = {
+    mensajes,
+    temperatura: 0.1,
+    top_p: 0.9,
+    max_tokens: maxTokens,
+  };
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HF Space /generate respondió HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { texto?: string; text?: string };
+  return { texto: String(data.texto ?? data.text ?? "") };
+}
+
+/** Código actual: catálogo de tools en el prompt + parser JSON. Es el fallback. */
+async function chatLegacy(req: IAChatRequestBody): Promise<IAChatResponse> {
+  const espacio = resolverSpaceHf(req.model);
+  const base = espacio.url.replace(/\/+$/, "");
   const url = `${base}/generate`;
 
   // Si el Space ignora `tools`, el catálogo va en el prompt y el modelo
@@ -235,6 +283,194 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
   return {
     content: texto,
     toolCalls,
-    model: "CHRISTS20/qwn-uml-lora-7b-v2",
+    model: espacio.id,
   };
+}
+
+/** Tools que cambian el diagrama; su resultado cierra la ronda DSL. */
+const HERRAMIENTAS_ESCRITURA: ReadonlySet<string> = new Set([
+  "addClass",
+  "connect",
+  "removeClass",
+  "replaceAll",
+  "updateAttribute",
+  "updateClass",
+  "updateMethod",
+  "updateRelation",
+]);
+
+function normalizarUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * Solo el Space propio usa el DSL.
+ *
+ * Se comprueba la URL registrada (no el nombre del modelo) para que el Space
+ * LoRA y cualquier modelo desconocido sigan por el camino legacy. Además el
+ * turno debe ofrecer al menos una tool de escritura: en modo plan no aplica.
+ */
+export function debeUsarDsl(req: IAChatRequestBody): boolean {
+  if (!IA_HF_SPACE_DSL) return false;
+
+  const modelo = (req.model ?? "").trim().toLowerCase();
+  const entrada = HF_SPACE_MODELOS.find((candidato) => candidato.id.toLowerCase() === modelo);
+  if (!entrada) return false;
+  if (normalizarUrl(entrada.url) !== normalizarUrl(HF_SPACE_PROPIO_URL)) return false;
+
+  return (req.tools ?? []).some((tool) => HERRAMIENTAS_ESCRITURA.has(tool.function.name));
+}
+
+interface AnalisisRonda {
+  esSegundaRonda: boolean;
+  huboEscritura: boolean;
+}
+
+/** Detecta si los mensajes ya traen resultados de tools después del último user. */
+export function analizarRonda(mensajes: IAChatMessage[]): AnalisisRonda {
+  let ultimoUsuario = -1;
+  for (let i = mensajes.length - 1; i >= 0; i -= 1) {
+    if (mensajes[i].role === "user") {
+      ultimoUsuario = i;
+      break;
+    }
+  }
+  if (ultimoUsuario === -1) return { esSegundaRonda: false, huboEscritura: false };
+
+  const posteriores = mensajes.slice(ultimoUsuario + 1).filter((m) => m.role === "tool");
+  if (posteriores.length === 0) return { esSegundaRonda: false, huboEscritura: false };
+
+  const huboEscritura = posteriores.some((m) => HERRAMIENTAS_ESCRITURA.has(m.name ?? ""));
+  return { esSegundaRonda: true, huboEscritura };
+}
+
+function ultimoContenidoAsistente(mensajes: IAChatMessage[]): string {
+  for (let i = mensajes.length - 1; i >= 0; i -= 1) {
+    if (mensajes[i].role === "assistant") return mensajes[i].content ?? "";
+  }
+  return "";
+}
+
+/** El Space solo acepta system/user/assistant: convierte los `tool` a `user`. */
+function sinMensajesTool(req: IAChatRequestBody): IAChatRequestBody {
+  if (!req.messages.some((mensaje) => mensaje.role === "tool")) return req;
+  return {
+    ...req,
+    messages: req.messages.map((mensaje) =>
+      mensaje.role === "tool"
+        ? {
+            role: "user",
+            content: `Resultado de la herramienta${
+              mensaje.name ? ` de ${mensaje.name}` : ""
+            }:\n${mensaje.content ?? ""}`,
+          }
+        : mensaje,
+    ),
+  };
+}
+
+/**
+ * Rama DSL: el modelo devuelve el diagrama completo y el frontend calcula el
+ * diff. Si el contrato falla dos veces, se cae al parser JSON actual.
+ */
+async function chatDsl(req: IAChatRequestBody, espacio: ReturnType<typeof resolverSpaceHf>): Promise<IAChatResponse> {
+  const sistema = req.messages.find((m) => m.role === "system")?.content ?? "";
+  const snapshot = extraerSnapshot(sistema);
+  if (!snapshot) return chatLegacy(sinMensajesTool(req));
+
+  const proyeccion = proyectarDiagrama(snapshot);
+  const mensajes = construirMensajesDsl(req.messages, proyeccion.diagrama);
+  const base = espacio.url.replace(/\/+$/, "");
+  const url = `${base}/generate`;
+  const maxTokens =
+    Number.isFinite(IA_HF_SPACE_DSL_MAX_TOKENS) && IA_HF_SPACE_DSL_MAX_TOKENS > 0
+      ? IA_HF_SPACE_DSL_MAX_TOKENS
+      : 1536;
+
+  const primera = await pedirGenerate(url, mensajes, maxTokens);
+  let validada = validarSalida(extraerJson(primera.texto));
+
+  if (!validada.ok) {
+    const maxTokensReintento = Math.min(maxTokens * 2, 4096);
+    const reintento: MensajeDsl[] = [
+      ...mensajes,
+      { role: "assistant", content: primera.texto || "(respuesta vacía)" },
+      {
+        role: "user",
+        content: `Tu respuesta no cumplió el contrato: ${validada.error}\nDevuelve SOLO el objeto JSON completo y corregido.`,
+      },
+    ];
+    try {
+      const segunda = await pedirGenerate(url, reintento, maxTokensReintento);
+      validada = validarSalida(extraerJson(segunda.texto));
+    } catch {
+      return chatLegacy(sinMensajesTool(req));
+    }
+  }
+
+  if (!validada.ok) return chatLegacy(sinMensajesTool(req));
+  const salida = validada.value;
+
+  if (salida.tipo === "consulta") {
+    const consultas = salida.consultas ?? [];
+    const toolCalls: IAToolCall[] = consultas.map((consulta, indice) => ({
+      id: `dsl-consulta-${indice + 1}`,
+      type: "function",
+      function: {
+        name: consulta.herramienta,
+        arguments: JSON.stringify(consulta.args ?? {}),
+      },
+    }));
+    return {
+      content: salida.mensaje || "Necesito consultar antes de editar.",
+      toolCalls,
+      model: espacio.id,
+    };
+  }
+
+  if (salida.tipo === "chat") {
+    return { content: salida.mensaje, toolCalls: [], model: espacio.id };
+  }
+
+  const deseado: DiagramaCanonico = {
+    entidades: salida.entidades ?? [],
+    relaciones: salida.relacionesOmitidas
+      ? proyeccion.diagrama.relaciones
+      : (salida.relaciones ?? []),
+  };
+  const diff = diffDiagrama(proyeccion, deseado, {
+    permitirBorrado: pedirBorrado(req.messages),
+  });
+  const toolCalls = toToolCalls(diff);
+  const avisos = diff.advertencias.length > 0 ? `\n\n${diff.advertencias.join("\n")}` : "";
+  const baseMensaje =
+    salida.mensaje.trim() ||
+    (toolCalls.length > 0 ? "Actualicé el diagrama." : "No hay cambios que aplicar.");
+
+  return {
+    content: `${baseMensaje}${avisos}`,
+    toolCalls,
+    model: espacio.id,
+  };
+}
+
+export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
+  const espacio = resolverSpaceHf(req.model);
+
+  if (!debeUsarDsl(req)) return chatLegacy(req);
+
+  const ronda = analizarRonda(req.messages);
+  // En la segunda ronda el agentLoop ya recibió las propuestas de escritura.
+  // Devolver el mismo content sin toolCalls evita duplicarlas.
+  if (ronda.esSegundaRonda && ronda.huboEscritura) {
+    return {
+      content:
+        ultimoContenidoAsistente(req.messages).trim() ||
+        "Propuesta lista para revisión humana.",
+      toolCalls: [],
+      model: espacio.id,
+    };
+  }
+
+  return chatDsl(req, espacio);
 }

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { applyPendingProposals, runAgentLoop } from "@/lib/ia/agentLoop";
-import { IA_DEFAULT_PROVIDER, IA_MAX_HISTORY_TURNS } from "@/lib/ia/config";
+import { IA_DEFAULT_PROVIDER, IA_HF_SPACE_MODEL, IA_MAX_HISTORY_TURNS } from "@/lib/ia/config";
 import type { IAProvider, PendingProposal, TurnTrace } from "@/lib/ia/types";
 import type { PersonaIA } from "@/lib/ia/types";
 import { clearGhostPreview, confirmGhostPreview, hasGhostPreview, showGhostPreview } from "@/lib/ia/ghostPreview";
@@ -296,8 +296,9 @@ function resumirSalaEnSegundoPlano(proyectoId: string, config: ConfigCadena | nu
 
 // Sin modelo elegido se usa el default del tramo en el servidor. Fijar aquí un
 // `IA_DEFAULT_MODEL` no sirve en el navegador (solo llegan las claves
-// `NEXT_PUBLIC_*`) y podía mandar un tag de Ollama a OpenRouter.
-const modeloInicial = "";
+// `NEXT_PUBLIC_*`) y podía mandar un tag de Ollama a OpenRouter. Para `hf-space`
+// sí fijamos el ID del Space propio, que es estable y no depende del entorno.
+const modeloInicial = IA_DEFAULT_PROVIDER === "hf-space" ? IA_HF_SPACE_MODEL : "";
 
 /** Restaura modo, ámbito y chat privado del proyecto y la persona actuales. */
 function cargarLocal(
@@ -394,9 +395,11 @@ export const useIAChat = create<IAChatState>((set, get) => ({
     // Ollama no es una opción del selector (D61): un valor heredado cae al
     // proveedor por defecto en lugar de romper el turno.
     const proveedor = proveedorSeleccionable(p);
+    // `hf-space` arranca con el ID del Space propio; el resto se elige en la lista.
+    const modelo = proveedor === "hf-space" ? IA_HF_SPACE_MODEL : "";
     set({
       proveedor,
-      modelo: "",
+      modelo,
       modelos: [],
       error: null,
       conformidad: null,
@@ -425,7 +428,19 @@ export const useIAChat = create<IAChatState>((set, get) => ({
         set({ modelos: [], error: data.error ?? "No se pudieron listar los modelos." });
         return;
       }
-      set({ modelos: data.models ?? [], error: null });
+      const modelos = data.models ?? [];
+      // Si aún no hay modelo elegido, preselecciona el del Space propio.
+      set((s) => {
+        const sinModelo = s.proveedor === provider && s.modelo.trim() === "";
+        const existe = modelos.includes(IA_HF_SPACE_MODEL);
+        return {
+          modelos,
+          error: null,
+          ...(sinModelo && provider === "hf-space" && existe
+            ? { modelo: IA_HF_SPACE_MODEL }
+            : {}),
+        };
+      });
     } catch (err: unknown) {
       set({
         modelos: [],

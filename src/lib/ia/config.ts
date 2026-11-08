@@ -6,11 +6,93 @@ export const OLLAMA_TUNEL_URL =
   process.env.NEXT_PUBLIC_OLLAMA_TUNEL_URL?.trim() ||
   process.env.OLLAMA_TUNEL_URL?.trim() ||
   OLLAMA_BASE_URL;
-// HF Space LoRA respaldo (público, ZeroGPU) — https://CHRISTS20-qwn-uml-space.hf.space
-export const HF_SPACE_URL =
+/**
+ * HF Spaces con formato `POST /generate`.
+ *
+ * Antes todo el proveedor `hf-space` apuntaba a un único Space (el de
+ * CHRISTS20). Ahora cada modelo del selector resuelve su propio Space, de modo
+ * que elegir `piloto-qwen2.5coder` envía las consultas al Space propio y no al
+ * heredado.
+ *
+ * `HF_SPACE_URL` se conserva como alias del Space por defecto (el propio) para
+ * no romper despliegues ni el proveedor falso de `test/`.
+ */
+const HF_SPACE_ENV_URL =
+  process.env.NEXT_PUBLIC_HF_SPACE_PROPIO_URL?.trim() ||
+  process.env.HF_SPACE_PROPIO_URL?.trim() ||
   process.env.NEXT_PUBLIC_HF_SPACE_URL?.trim() ||
   process.env.HF_SPACE_URL?.trim() ||
+  "";
+/** Space propio: Qwen2.5-Coder-7B-Instruct. */
+export const HF_SPACE_PROPIO_URL =
+  HF_SPACE_ENV_URL || "https://alexsolizduran-piloto-qwen2-5coder.hf.space";
+/** Space LoRA heredado; sigue disponible como opción del selector. */
+export const HF_SPACE_CHRISTS20_URL =
+  process.env.NEXT_PUBLIC_HF_SPACE_CHRISTS20_URL?.trim() ||
+  process.env.HF_SPACE_CHRISTS20_URL?.trim() ||
   "https://CHRISTS20-qwn-uml-space.hf.space";
+/** Alias de compatibilidad: Space usado por defecto y por `/health`. */
+export const HF_SPACE_URL = HF_SPACE_PROPIO_URL;
+
+/** Nombre visible del modelo propio en el selector. */
+export const HF_SPACE_MODEL_PROPIO = "piloto-qwen2.5coder";
+export const HF_SPACE_MODEL_QWEN = "Qwen/Qwen2.5-Coder-7B-Instruct";
+export const HF_SPACE_MODEL_LORA = "CHRISTS20/qwn-uml-lora-7b-v2";
+/** Modelo del Space que se usa cuando el tramo no fija uno. */
+export const IA_HF_SPACE_MODEL =
+  process.env.NEXT_PUBLIC_IA_HF_SPACE_MODEL?.trim() ||
+  process.env.IA_HF_SPACE_MODEL?.trim() ||
+  HF_SPACE_MODEL_PROPIO;
+
+/**
+ * DSL canónico para el Space propio.
+ *
+ * Solo se activa cuando el modelo resuelve a `HF_SPACE_PROPIO_URL` y el turno
+ * ofrece tools de escritura. El Space LoRA, los demás proveedores y el modo
+ * plan siguen usando el parser JSON de siempre.
+ *
+ * Activado por defecto; `IA_HF_SPACE_DSL=0` lo desactiva sin tocar código.
+ */
+export const IA_HF_SPACE_DSL =
+  (process.env.NEXT_PUBLIC_IA_HF_SPACE_DSL?.trim() ||
+    process.env.IA_HF_SPACE_DSL?.trim() ||
+    "1") !== "0";
+
+/** Tope de tokens de salida del DSL. El diagrama completo puede ser grande. */
+export const IA_HF_SPACE_DSL_MAX_TOKENS = Number(
+  process.env.NEXT_PUBLIC_IA_HF_SPACE_DSL_MAX_TOKENS?.trim() ||
+    process.env.IA_HF_SPACE_DSL_MAX_TOKENS?.trim() ||
+    "1536",
+);
+
+export interface EspacioModeloHF {
+  /** ID que muestra el selector y que se guarda en la atribución del mensaje. */
+  id: string;
+  /** Base del Space que atiende ese ID. */
+  url: string;
+  /** Modelo real que corre dentro del Space (informativo). */
+  modelo: string;
+}
+
+/**
+ * Registro modelo → Space. El orden es el del selector: primero el propio.
+ * `Qwen/Qwen2.5-Coder-7B-Instruct` se mantiene por compatibilidad con valores
+ * guardados en `.env` o en configuraciones de proyecto antiguas y también
+ * resuelve al Space propio.
+ */
+export const HF_SPACE_MODELOS: readonly EspacioModeloHF[] = [
+  { id: HF_SPACE_MODEL_PROPIO, url: HF_SPACE_PROPIO_URL, modelo: HF_SPACE_MODEL_QWEN },
+  { id: HF_SPACE_MODEL_LORA, url: HF_SPACE_CHRISTS20_URL, modelo: HF_SPACE_MODEL_LORA },
+  { id: HF_SPACE_MODEL_QWEN, url: HF_SPACE_PROPIO_URL, modelo: HF_SPACE_MODEL_QWEN },
+];
+
+/** Resuelve el Space de un modelo; sin coincidencia usa el propio. */
+export function resolverSpaceHf(modelo?: string | null): EspacioModeloHF {
+  const buscado = (modelo ?? "").trim().toLowerCase();
+  const encontrado = HF_SPACE_MODELOS.find((entrada) => entrada.id.toLowerCase() === buscado);
+  return encontrado ?? HF_SPACE_MODELOS[0];
+}
+
 /**
  * Router de Inference Providers: endpoint OpenAI-compatible ACTUAL de Hugging
  * Face. El host heredado api-inference.huggingface.co dejó de existir en DNS y
