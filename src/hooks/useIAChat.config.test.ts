@@ -4,11 +4,15 @@ import type { ConfigIaApi } from "@/lib/config-ia/api";
 
 const mocks = vi.hoisted(() => ({
   obtenerConfigIa: vi.fn(),
+  actualizarConfigIa: vi.fn(),
   sonda: vi.fn(),
   leerCache: vi.fn(),
 }));
 
-vi.mock("@/lib/config-ia/api", () => ({ obtenerConfigIa: mocks.obtenerConfigIa }));
+vi.mock("@/lib/config-ia/api", () => ({
+  obtenerConfigIa: mocks.obtenerConfigIa,
+  actualizarConfigIa: mocks.actualizarConfigIa,
+}));
 vi.mock("@/lib/ia/conformidad", () => ({
   probarConformidad: mocks.sonda,
   leerConformidadCache: mocks.leerCache,
@@ -99,5 +103,80 @@ describe("conformidad en el store", () => {
 
     expect(mocks.sonda).not.toHaveBeenCalled();
     expect(useIAChat.getState().error).toContain("modelo");
+  });
+});
+
+describe("selección compartida del proyecto (config_ia)", () => {
+  beforeEach(() => {
+    useIAChat.setState({
+      proveedor: "openrouter",
+      modelo: "",
+      modeloPrivado: "",
+      ambito: "grupo",
+      error: null,
+      avisoConfig: null,
+      usuario: { usuarioId: 1, nombre: "Ana", puedeEditar: true, rol: null },
+    });
+  });
+
+  it("aplica la selección que fijó el creador al cargar la config", async () => {
+    mocks.obtenerConfigIa.mockResolvedValue({
+      ...config,
+      porDefecto: false,
+      proveedor: "hf-space",
+      modelo: "CHRISTS20/qwn-uml-lora-7b-v2",
+    });
+
+    await useIAChat.getState().cargarConfigIa("7");
+
+    expect(useIAChat.getState().proveedor).toBe("hf-space");
+    expect(useIAChat.getState().modelo).toBe("CHRISTS20/qwn-uml-lora-7b-v2");
+  });
+
+  it("no pisa la selección cuando el proyecto no tiene config propia", async () => {
+    useIAChat.setState({ proveedor: "openrouter", modelo: "modelo/mio" });
+    mocks.obtenerConfigIa.mockResolvedValue(config); // porDefecto: true
+
+    await useIAChat.getState().cargarConfigIa("7");
+
+    expect(useIAChat.getState().proveedor).toBe("openrouter");
+    expect(useIAChat.getState().modelo).toBe("modelo/mio");
+  });
+
+  it("el CREADOR guarda la selección en config_ia", async () => {
+    useIAChat.setState({
+      usuario: { usuarioId: 1, nombre: "Ana", puedeEditar: true, rol: "CREADOR" },
+    });
+
+    useIAChat.getState().setModelo("openrouter/modelo-x");
+
+    await vi.waitFor(() =>
+      expect(mocks.actualizarConfigIa).toHaveBeenCalledWith("7", {
+        proveedor: "openrouter",
+        modelo: "openrouter/modelo-x",
+      }),
+    );
+  });
+
+  it("un colaborador no guarda nada en config_ia", () => {
+    useIAChat.setState({
+      usuario: { usuarioId: 2, nombre: "Luis", puedeEditar: true, rol: "EDITOR" },
+    });
+
+    useIAChat.getState().setModelo("openrouter/modelo-x");
+
+    expect(mocks.actualizarConfigIa).not.toHaveBeenCalled();
+  });
+
+  it("el ámbito privado siempre sondea HF Space con el modelo local", async () => {
+    useIAChat.setState({ ambito: "privado", modeloPrivado: "Qwen/Qwen2.5-Coder-7B-Instruct" });
+
+    await useIAChat.getState().probarConformidad();
+
+    expect(mocks.sonda).toHaveBeenCalledWith({
+      proveedor: "hf-space",
+      modelo: "Qwen/Qwen2.5-Coder-7B-Instruct",
+      forzar: undefined,
+    });
   });
 });

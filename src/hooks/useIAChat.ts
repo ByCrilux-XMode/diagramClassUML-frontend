@@ -25,7 +25,7 @@ import type { PropuestaApi, TurnoPendiente } from "@/lib/propuestas/tipos";
 import type { RolProyecto } from "@/types/proyecto";
 import { formatearAvisoFallback, resolverCadena } from "@/lib/ia/router";
 import type { ConfigCadena, TareaIA, TramoProveedor } from "@/lib/ia/router";
-import { obtenerConfigIa } from "@/lib/config-ia/api";
+import { obtenerConfigIa, actualizarConfigIa } from "@/lib/config-ia/api";
 import type { ConfigIaApi } from "@/lib/config-ia/api";
 import { leerConformidadCache, probarConformidad as ejecutarSondaConformidad } from "@/lib/ia/conformidad";
 import type { ResultadoConformidad } from "@/lib/ia/conformidad";
@@ -50,6 +50,12 @@ interface ContextoUsuario {
   usuarioId: number | null;
   nombre: string;
   puedeEditar: boolean;
+  /**
+   * Rol en el proyecto. El CREADOR es el único que puede cambiar el
+   * proveedor/modelo del apartado GRUPAL (el backend de config_ia lo exige);
+   * el resto de las personas usa la selección guardada en el proyecto.
+   */
+  rol?: RolProyecto | null;
 }
 
 interface ResponderEnChatInput {
@@ -63,6 +69,8 @@ interface ResponderEnChatInput {
 interface IAChatState {
   proveedor: IAProvider;
   modelo: string;
+  /** Modelo del ámbito PRIVADO: siempre HF Space — modelo propio (D43). */
+  modeloPrivado: string;
   modelos: string[];
   pensando: boolean;
   /** Modo de edición de la IA. Solo lo mueve una persona (D38). */
@@ -86,13 +94,22 @@ interface IAChatState {
   configIa: ConfigIaApi | null;
   /** Aviso discreto cuando respondió un tramo de respaldo (D62). */
   avisoFallback: string | null;
+  /** Aviso cuando la selección GRUPAL no se pudo guardar en el proyecto. */
+  avisoConfig: string | null;
   /** Última sonda de conformidad del proveedor/modelo seleccionados. */
   conformidad: ResultadoConformidad | null;
   probandoConformidad: boolean;
   setProyectoActivo: (proyectoId: string | null) => void;
-  setContextoUsuario: (usuario: { usuarioId?: number | null; nombre: string; puedeEditar: boolean }) => void;
+  setContextoUsuario: (usuario: {
+    usuarioId?: number | null;
+    nombre: string;
+    puedeEditar: boolean;
+    rol?: RolProyecto | null;
+  }) => void;
   setProveedor: (p: IAProvider) => void;
   setModelo: (m: string) => void;
+  /** Modelo local del ámbito privado (HF Space); no viaja al proyecto. */
+  setModeloPrivado: (m: string) => void;
   setModo: (m: ModoIA) => void;
   setAmbito: (a: AmbitoIA) => void;
   setModelos: (modelos: string[]) => void;
@@ -128,6 +145,52 @@ function proveedorSeleccionable(proveedor: IAProvider): IAProvider {
   return PROVEEDORES_SELECTOR.includes(IA_DEFAULT_PROVIDER) ? IA_DEFAULT_PROVIDER : "openrouter";
 }
 
+/**
+ * Proveedor/modelo que realmente usa el turno según el ámbito.
+ * El privado nunca sale de HF Space — modelo propio; el grupal respeta la
+ * selección (compartida vía `config_ia` cuando la fija el CREADOR).
+ */
+function proveedorEfectivo(
+  estado: Pick<IAChatState, "ambito" | "proveedor">,
+): IAProvider {
+  return estado.ambito === "privado" ? "hf-space" : estado.proveedor;
+}
+
+function modeloEfectivo(
+  estado: Pick<IAChatState, "ambito" | "modelo" | "modeloPrivado">,
+): string {
+  return (estado.ambito === "privado" ? estado.modeloPrivado : estado.modelo).trim();
+}
+
+/**
+ * Guarda la selección GRUPAL en el proyecto. Solo el CREADOR puede: el
+ * backend de `config_ia` devuelve 403 para el resto, y acá ni se intenta.
+ * Es best-effort: un fallo deja un aviso en el panel pero no rompe el turno.
+ */
+async function persistirSeleccion(
+  get: () => IAChatState,
+  set: (parcial: Partial<IAChatState>) => void,
+): Promise<void> {
+  const { proyectoActivoId, usuario, proveedor, modelo } = get();
+  if (!proyectoActivoId || usuario.rol !== "CREADOR") return;
+  set({ avisoConfig: null });
+  try {
+    await actualizarConfigIa(proyectoActivoId, {
+      proveedor,
+      modelo: modelo.trim() || null,
+    });
+  } catch (err: unknown) {
+    if (get().proyectoActivoId !== proyectoActivoId) return;
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    set({
+      avisoConfig:
+        status === 403
+          ? "Tu rol no puede cambiar el modelo del proyecto."
+          : "No se pudo guardar la selección en el proyecto; se usará solo en este navegador.",
+    });
+  }
+}
+
 function configParaCadena(configIa: ConfigIaApi | null): ConfigCadena | null {
   return configIa ? { cadenas: configIa.cadenas } : null;
 }
@@ -135,11 +198,13 @@ function configParaCadena(configIa: ConfigIaApi | null): ConfigCadena | null {
 /**
  * Cadena efectiva del turno (D59): `config_ia` → `.env` → D55. El proveedor
  * elegido en el selector fija solo el primer tramo y no se repite después.
+ *
+ * El pin depende del ámbito: GRUPAL usa la selección compartida del proyecto
+ * (la fija el CREADOR); PRIVADO va siempre a HF Space — modelo propio con el
+ * modelo local de cada persona (D43).
  */
 function resolverParaTurno(estado: IAChatState, tarea: TareaIA): TramoProveedor[] {
-  const pin = estado.proveedor
-    ? { proveedor: estado.proveedor, modelo: estado.modelo.trim() || null }
-    : null;
+  const pin = { proveedor: proveedorEfectivo(estado), modelo: modeloEfectivo(estado) || null };
   try {
     return resolverCadena({ tarea, config: configParaCadena(estado.configIa), pinPersona: pin });
   } catch (err: unknown) {
@@ -176,7 +241,7 @@ const AMBITOS: readonly AmbitoIA[] = ["grupo", "privado"];
 const MODOS: readonly ModoIA[] = ["plan", "build"];
 
 function claveLocal(
-  base: "modo" | "ambito",
+  base: "modo" | "ambito" | "modeloPrivado",
   proyectoId: string | null,
   usuarioId: number | null | undefined,
 ): string | null {
@@ -185,17 +250,20 @@ function claveLocal(
 }
 
 function leerLocal<T extends string>(
-  base: "modo" | "ambito",
+  base: "modo" | "ambito" | "modeloPrivado",
   proyectoId: string | null,
   usuarioId: number | null | undefined,
-  permitidos: readonly T[],
+  /** `null` = cualquier valor guardado (texto libre, p. ej. un modelo). */
+  permitidos: readonly T[] | null,
   defecto: T,
 ): T {
   const clave = claveLocal(base, proyectoId, usuarioId);
   if (!clave || typeof window === "undefined") return defecto;
   try {
     const crudo = window.localStorage.getItem(clave);
-    if (crudo && (permitidos as readonly string[]).includes(crudo)) return crudo as T;
+    if (crudo && (!permitidos || (permitidos as readonly string[]).includes(crudo))) {
+      return crudo as T;
+    }
   } catch {
     // sin localStorage disponible: se queda con el valor por defecto
   }
@@ -203,7 +271,7 @@ function leerLocal<T extends string>(
 }
 
 function escribirLocal(
-  base: "modo" | "ambito",
+  base: "modo" | "ambito" | "modeloPrivado",
   proyectoId: string | null,
   usuarioId: number | null | undefined,
   valor: string,
@@ -310,6 +378,7 @@ function cargarLocal(
   set({
     ambito: leerLocal<AmbitoIA>("ambito", proyectoActivoId, uid, AMBITOS, "grupo"),
     modo: leerLocal<ModoIA>("modo", proyectoActivoId, uid, MODOS, "plan"),
+    modeloPrivado: leerLocal<string>("modeloPrivado", proyectoActivoId, uid, null, ""),
     mensajes: cargarPrivado<ChatEntry>(clavePrivado(proyectoActivoId, uid)),
   });
 }
@@ -323,6 +392,7 @@ function persistirMensajes(get: () => IAChatState): void {
 export const useIAChat = create<IAChatState>((set, get) => ({
   proveedor: proveedorSeleccionable(IA_DEFAULT_PROVIDER),
   modelo: modeloInicial,
+  modeloPrivado: "",
   modelos: [],
   pensando: false,
   modo: "plan",
@@ -340,6 +410,7 @@ export const useIAChat = create<IAChatState>((set, get) => ({
   usuario: { usuarioId: null, nombre: "Usuario", puedeEditar: false },
   configIa: null,
   avisoFallback: null,
+  avisoConfig: null,
   conformidad: null,
   probandoConformidad: false,
 
@@ -365,6 +436,7 @@ export const useIAChat = create<IAChatState>((set, get) => ({
       pensando: false,
       configIa: null,
       avisoFallback: null,
+      avisoConfig: null,
       conformidad: null,
     });
     cargarLocal(get, set);
@@ -373,8 +445,8 @@ export const useIAChat = create<IAChatState>((set, get) => ({
     if (proyectoId) void get().cargarConfigIa(proyectoId);
   },
 
-  setContextoUsuario({ usuarioId = null, nombre, puedeEditar }) {
-    set({ usuario: { usuarioId, nombre, puedeEditar } });
+  setContextoUsuario({ usuarioId = null, nombre, puedeEditar, rol = null }) {
+    set({ usuario: { usuarioId, nombre, puedeEditar, rol } });
     cargarLocal(get, set);
   },
 
@@ -387,7 +459,18 @@ export const useIAChat = create<IAChatState>((set, get) => ({
   setAmbito(ambito) {
     const { proyectoActivoId, usuario } = get();
     escribirLocal("ambito", proyectoActivoId, usuario.usuarioId, ambito);
-    set({ ambito });
+    // El badge de conformidad depende de qué modelo va a usar el turno:
+    // al cambiar de ámbito se relee de la caché (D60) para no mostrar la
+    // sonda del otro proveedor.
+    const estado = get();
+    const proveedor = proveedorEfectivo({ ...estado, ambito });
+    const modelo = modeloEfectivo({ ...estado, ambito });
+    set({
+      ambito,
+      error: null,
+      avisoFallback: null,
+      conformidad: modelo ? leerConformidadCache(proveedor, modelo) : null,
+    });
   },
 
   setProveedor(p) {
@@ -401,12 +484,28 @@ export const useIAChat = create<IAChatState>((set, get) => ({
       error: null,
       conformidad: null,
       avisoFallback: null,
+      avisoConfig: null,
     });
+    // El CREADOR fija el modelo del proyecto: los colaboradores lo cargan
+    // con config_ia y lo usan en sus turnos.
+    void persistirSeleccion(get, set);
   },
 
   setModelo(m) {
     // D60: la caché se invalida al cambiar de modelo.
-    set({ modelo: m, error: null, conformidad: leerConformidadCache(get().proveedor, m) });
+    set({ modelo: m, error: null, avisoConfig: null, conformidad: leerConformidadCache(get().proveedor, m) });
+    void persistirSeleccion(get, set);
+  },
+
+  setModeloPrivado(m) {
+    // El privado es local por persona (D43): no se guarda en el proyecto.
+    const { proyectoActivoId, usuario } = get();
+    escribirLocal("modeloPrivado", proyectoActivoId, usuario.usuarioId, m);
+    set({
+      modeloPrivado: m,
+      error: null,
+      conformidad: m.trim() ? leerConformidadCache("hf-space", m.trim()) : null,
+    });
   },
 
   setModelos(modelos) {
@@ -414,7 +513,7 @@ export const useIAChat = create<IAChatState>((set, get) => ({
   },
 
   async cargarModelos(p) {
-    const provider = p ?? get().proveedor;
+    const provider = p ?? proveedorEfectivo(get());
     try {
       const res = await fetch(`/api/ia/models?provider=${encodeURIComponent(provider)}`);
       const data = (await res.json().catch(() => ({}))) as {
@@ -435,7 +534,7 @@ export const useIAChat = create<IAChatState>((set, get) => ({
   },
 
   async verificarSalud(p) {
-    const provider = p ?? get().proveedor;
+    const provider = p ?? proveedorEfectivo(get());
     set({ checking: true });
     try {
       const res = await fetch(`/api/ia/health?provider=${encodeURIComponent(provider)}`);
@@ -457,6 +556,19 @@ export const useIAChat = create<IAChatState>((set, get) => ({
       // Evita pisar el proyecto nuevo con una respuesta tardía del anterior.
       if (get().proyectoActivoId !== id) return;
       set({ configIa });
+      // La selección que fijó el CREADOR manda para todas las personas:
+      // es lo que hace que los colaboradores usen ese mismo modelo.
+      if (!configIa.porDefecto && configIa.proveedor) {
+        const proveedor = proveedorSeleccionable(configIa.proveedor);
+        const modelo = configIa.modelo?.trim() ?? "";
+        if (proveedor !== get().proveedor || modelo !== get().modelo) {
+          set({
+            proveedor,
+            modelo,
+            conformidad: modelo ? leerConformidadCache(proveedor, modelo) : null,
+          });
+        }
+      }
     } catch {
       // Sin configuración se usan los defaults de `.env`/D55; el turno sigue.
       if (get().proyectoActivoId === id) set({ configIa: null });
@@ -464,8 +576,8 @@ export const useIAChat = create<IAChatState>((set, get) => ({
   },
 
   async probarConformidad(p, m, forzar) {
-    const proveedor = p ?? get().proveedor;
-    const modelo = (m ?? get().modelo).trim();
+    const proveedor = p ?? proveedorEfectivo(get());
+    const modelo = (m ?? modeloEfectivo(get())).trim();
     if (!modelo) {
       set({
         conformidad: null,

@@ -1,5 +1,6 @@
 import {
   IA_CHAT_TIMEOUT_MS,
+  IA_OPENROUTER_MODEL,
   OPENROUTER_BASE_URL,
   OPENROUTER_MODELS,
 } from "@/lib/ia/config";
@@ -119,27 +120,11 @@ export async function health(): Promise<HealthResult> {
 }
 
 export async function listModels(): Promise<string[]> {
-  // Solo tus modelos de .env + los gratuitos (:free) del catálogo, para que el
-  // dropdown del editor no muestre los miles de modelos de pago.
-  const result = new Set<string>(OPENROUTER_MODELS);
-  const keys = getKeys();
-  if (keys.length === 0) return [...result];
-  try {
-    const res = await fetchWithTimeout(
-      `${OPENROUTER_BASE_URL}/api/v1/models`,
-      { headers: { Authorization: `Bearer ${keys[0]}` } },
-      10000
-    );
-    if (res.ok) {
-      const json = (await res.json()) as { data?: Array<{ id?: string }> };
-      for (const item of json.data ?? []) {
-        if (typeof item.id === "string" && item.id.endsWith(":free")) result.add(item.id);
-      }
-    }
-  } catch {
-    // sin red: se devuelve solo tus modelos
-  }
-  return [...result];
+  // Un solo modelo para el selector: el de la variable de entorno
+  // (IA_OPENROUTER_MODEL). Antes se agregaban también los `:free` del
+  // catálogo, pero esos endpoints no aceptan image input y reventaban la
+  // ruta visión con "No endpoints found that support image input" (404).
+  return [IA_OPENROUTER_MODEL || OPENROUTER_MODELS[0] || ""].filter((m) => m.length > 0);
 }
 
 /**

@@ -167,6 +167,24 @@ if (_legacyModel && !OPENROUTER_MODELS.includes(_legacyModel)) {
   OPENROUTER_MODELS.unshift(_legacyModel);
 }
 export const OPENROUTER_DEFAULT_MODEL = OPENROUTER_MODELS[0] ?? "";
+
+/**
+ * Único modelo de OpenRouter que usa la app (fase 8+).
+ *
+ *  - Ruta visión: foto → proyecto (CreateProjectModal / runVisionImport).
+ *  - Apartado GRUPAL: el selector del asistente solo ofrece este modelo
+ *    (listModels() de OpenRouter ya no barre el catálogo `:free`).
+ *
+ * En Vercel se setea `IA_OPENROUTER_MODEL`; la variante `NEXT_PUBLIC_`
+ * existe para que el navegador (modal de crear proyecto, selector del
+ * panel) pueda resolverla sin llamada al servidor. Se leen las dos para
+ * que cualquiera de los dos nombres funcione.
+ */
+export const IA_OPENROUTER_MODEL =
+  process.env.NEXT_PUBLIC_IA_OPENROUTER_MODEL?.trim() ||
+  process.env.IA_OPENROUTER_MODEL?.trim() ||
+  "";
+
 /** Modelo usado por la ruta /api/ia/help (usa el primero de tus 3). */
 export const IA_HELP_MODEL =
   process.env.NEXT_PUBLIC_IA_HELP_MODEL?.trim() ||

@@ -2,17 +2,23 @@ import { NextRequest } from "next/server";
 import type { IAChatMessage, IAProvider, IAToolDef } from "@/lib/ia/types";
 import { getAdapter, isValidProvider } from "@/lib/ia/adapters";
 import { guardiaIA } from "@/lib/ia/guardia";
-import { IA_DEFAULT_MODEL, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
+import { IA_DEFAULT_MODEL, IA_OPENROUTER_MODEL, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
 
 /**
  * Modelo que se manda al proveedor. El navegador solo ve las claves
  * `NEXT_PUBLIC_*`, así que puede llegar vacío o con un identificador de otro
  * proveedor (p. ej. un tag de Ollama `qwen2.5-coder:7b` a OpenRouter, que
  * responde HTTP 400). Aquí se resuelve con la configuración del servidor.
+ *
+ * `esVision` marca la ruta foto→proyecto: en OpenRouter se fuerza el modelo
+ * único de `IA_OPENROUTER_MODEL` (acepta image input), aunque el navegador
+ * haya mandado otro o ninguno. Así el nombre plano de la variable funciona
+ * aunque no esté duplicada como `NEXT_PUBLIC_`.
  */
-function resolverModelo(provider: IAProvider, solicitado: string): string {
+function resolverModelo(provider: IAProvider, solicitado: string, esVision = false): string {
   const modelo = solicitado.trim();
   if (provider === "openrouter") {
+    if (esVision && IA_OPENROUTER_MODEL) return IA_OPENROUTER_MODEL;
     // Los IDs de OpenRouter siempre son `organizacion/modelo`.
     if (modelo === "" || !modelo.includes("/")) return OPENROUTER_DEFAULT_MODEL;
     return modelo;
@@ -46,7 +52,11 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
-  const model = typeof raw.model === "string" ? resolverModelo(provider as IAProvider, raw.model) : "";
+  const esVision = raw.task === "vision";
+  const model =
+    typeof raw.model === "string"
+      ? resolverModelo(provider as IAProvider, raw.model, esVision)
+      : "";
   if (model === "") {
     return Response.json(
       { error: "Falta el campo 'model' y el proveedor no tiene un modelo por defecto configurado." },

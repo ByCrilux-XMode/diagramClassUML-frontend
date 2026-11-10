@@ -28,6 +28,7 @@
  *      para que la UI (CreateProjectModal) lo consuma sin cambios de API.
  */
 import type { IAProvider, IAChatMessage } from "./types";
+import { IA_OPENROUTER_MODEL } from "./config";
 import { VISION_SYSTEM_PROMPT, VISION_DEFAULT_MODEL } from "./visionSystemPrompt";
 export { VISION_DEFAULT_MODEL };
 import { VISION_OUTPUT_SCHEMA, validateCrossReferences, normalizeVisionKeys } from "./visionSchema";
@@ -74,7 +75,14 @@ function parseVisionJson(raw: string): unknown {
  * la UI reutilice el trace/HITL existente sin tocar su contrato.
  */
 export async function runVisionImport(params: RunVisionParams): Promise<RunVisionResult> {
-  const model = params.model?.trim() || VISION_DEFAULT_MODEL;
+  // Modelo de visión: si el tramo va a OpenRouter se usa SIEMPRE el modelo
+  // único de la variable de entorno (acepta imagen); el resto de proveedores
+  // conservan el modelo pedido por quien llama.
+  const modeloSolicitado = params.model?.trim() || VISION_DEFAULT_MODEL;
+  const model =
+    params.provider === "openrouter" && IA_OPENROUTER_MODEL
+      ? IA_OPENROUTER_MODEL
+      : modeloSolicitado;
   const system: IAChatMessage = { role: "system", content: VISION_SYSTEM_PROMPT };
   const userText = params.userMessage?.trim();
   const user: IAChatMessage = {
@@ -94,7 +102,7 @@ export async function runVisionImport(params: RunVisionParams): Promise<RunVisio
     const res = await fetch("/api/ia/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: params.provider, model, messages, tools: [] }),
+      body: JSON.stringify({ provider: params.provider, model, messages, tools: [], task: "vision" }),
       signal: controller.signal,
     });
     const data = (await res.json().catch(() => ({}))) as { content?: string; error?: string };

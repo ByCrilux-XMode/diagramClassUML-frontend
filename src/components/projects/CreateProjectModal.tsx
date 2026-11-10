@@ -29,6 +29,7 @@ import { buildSystemPrompt } from "@/lib/ia/prompt";
 import {
   HF_USE_ROUTER,
   IA_DEFAULT_PROVIDER,
+  IA_OPENROUTER_MODEL,
   IA_VISION_HF_MODEL,
   IA_VISION_PROVIDER,
   OPENROUTER_DEFAULT_MODEL,
@@ -297,7 +298,17 @@ export default function CreateProjectModal({
         }
         const list: Candidate[] = [];
         if (isImage && HF_USE_ROUTER) list.push({ provider: "huggingface", model: IA_VISION_HF_MODEL });
-        for (const m of toTry) list.push({ provider: "openrouter" as const, model: m });
+        // Con imagen, OpenRouter prefiere el modelo único de la variable de
+        // entorno: los demás IDs (sobre todo los `:free`) no tienen endpoints
+        // con image input y responden HTTP 404. Si el navegador no ve la
+        // variable (nombre sin prefijo NEXT_PUBLIC_) se conservan los
+        // candidatos de siempre y el servidor la resuelve igual vía task.
+        const openrouterModels = isImage && IA_OPENROUTER_MODEL ? [IA_OPENROUTER_MODEL] : toTry;
+        if (openrouterModels.length > 0) {
+          for (const m of openrouterModels) list.push({ provider: "openrouter" as const, model: m });
+        } else if (isImage) {
+          list.push({ provider: "openrouter" as const, model: "" });
+        }
         for (const c of list) {
           try {
             setAiTrace(`Túnel no responde, probando ${c.provider} con ${c.model}...`);
@@ -334,7 +345,7 @@ export default function CreateProjectModal({
             }
             const emsg = e instanceof Error ? e.message : String(e);
             // 400 model ID inválido, 401/403/429 auth/rate, o safety/vacío -> prueba siguiente modelo
-            if (!/not a valid model ID|401|403|429|Missing Authentication|User Safety|No se pudo generar|agentic harnesses/i.test(emsg)) throw e;
+            if (!/not a valid model ID|401|403|429|Missing Authentication|User Safety|No se pudo generar|agentic harnesses|No endpoints found that support image input/i.test(emsg)) throw e;
           }
         }
         if (lastErr) throw lastErr;

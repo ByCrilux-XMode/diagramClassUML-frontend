@@ -19,6 +19,7 @@ import {
 import { useIAChat } from "@/hooks/useIAChat";
 import type { ChatEntry } from "@/hooks/useIAChat";
 import type { IAProvider } from "@/lib/ia/types";
+import type { RolProyecto } from "@/types/proyecto";
 import { guardarPlan, listarPlanes } from "@/lib/planes/api";
 import type { Plan } from "@/lib/planes/api";
 import { HF_USE_ROUTER } from "@/lib/ia/config";
@@ -141,6 +142,8 @@ export default function AsistentePanel({
     setProveedor,
     modelo,
     setModelo,
+    modeloPrivado,
+    setModeloPrivado,
     modelos,
     pensando,
     mensajes,
@@ -164,6 +167,7 @@ export default function AsistentePanel({
     setAmbito,
     ultimoPlan,
     avisoFallback,
+    avisoConfig,
     conformidad,
     probandoConformidad,
     probarConformidad,
@@ -181,6 +185,23 @@ export default function AsistentePanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const puedeEditar = rol ? rol === "CREADOR" || rol === "EDITOR" : !readOnly;
+  /** El prop llega como string genérico: se estrecha al dominio del proyecto. */
+  const rolProyecto: RolProyecto | null =
+    rol === "CREADOR" || rol === "EDITOR" || rol === "LECTOR" ? rol : null;
+  /**
+   * Solo el CREADOR cambia el proveedor/modelo del apartado GRUPAL: la
+   * selección se guarda en `config_ia` del proyecto y los colaboradores la
+   * cargan al abrir (el backend también exige CREADOR en el PATCH).
+   */
+  const esCreador = rolProyecto === "CREADOR";
+  const esPrivado = ambito === "privado";
+  /** Proveedor visible en el selector: el privado siempre es HF Space. */
+  const proveedorUI: IAProvider = esPrivado ? "hf-space" : proveedor;
+  /** Modelo visible: el privado es local de cada persona, no del proyecto. */
+  const modeloUI = esPrivado ? modeloPrivado : modelo;
+  const setModeloUI = esPrivado ? setModeloPrivado : setModelo;
+  /** En GRUPAL el modelo lo fija el creador; en PRIVADO cada quien elige. */
+  const modeloBloqueado = pensando || (esPrivado ? false : !esCreador);
   const usuarioChat = useMemo(
     () => ({ usuarioId: usuarioId ?? null, nombre: usuarioNombre }),
     [usuarioId, usuarioNombre],
@@ -219,8 +240,8 @@ export default function AsistentePanel({
   }, [proyectoId]);
 
   useEffect(() => {
-    setContextoUsuario({ usuarioId: usuarioId ?? null, nombre: usuarioNombre, puedeEditar });
-  }, [usuarioId, usuarioNombre, puedeEditar, setContextoUsuario]);
+    setContextoUsuario({ usuarioId: usuarioId ?? null, nombre: usuarioNombre, puedeEditar, rol: rolProyecto });
+  }, [usuarioId, usuarioNombre, puedeEditar, rolProyecto, setContextoUsuario]);
 
   // El ámbito guardado manda al abrir: si la última visita fue privada, se
   // abre la pestaña privada (D43). Se ajusta durante el render para
@@ -259,14 +280,12 @@ export default function AsistentePanel({
   };
 
   useEffect(() => {
+    // El proveedor efectivo lo resuelve el store según el ámbito: GRUPAL
+    // usa la selección del proyecto y PRIVADO siempre HF Space. Se recarga
+    // al cambiar de pestaña y al cambiar la selección del creador.
     void verificarSalud();
     void cargarModelos();
-  }, [verificarSalud, cargarModelos]);
-
-  useEffect(() => {
-    void verificarSalud(proveedor);
-    void cargarModelos(proveedor);
-  }, [proveedor, verificarSalud, cargarModelos]);
+  }, [ambito, proveedor, verificarSalud, cargarModelos]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -421,14 +440,23 @@ export default function AsistentePanel({
                 Proveedor
               </span>
               <select
-                value={proveedor}
+                value={proveedorUI}
                 onChange={(e) => setProveedor(e.target.value as IAProvider)}
-                disabled={pensando}
+                disabled={pensando || !esCreador || esPrivado}
+                title={
+                  esPrivado
+                    ? "El chat privado usa siempre HF Space — modelo propio"
+                    : esCreador
+                      ? "Fija el proveedor para todo el proyecto"
+                      : "Solo el creador puede cambiar el proveedor"
+                }
                 className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
               >
                 <option value="hf-space">HF Space — modelo propio</option>
-                {HF_USE_ROUTER && <option value="huggingface">Hugging Face (Inferencia)</option>}
-                {HF_USE_ROUTER && <option value="openrouter">OpenRouter</option>}
+                {!esPrivado && HF_USE_ROUTER && (
+                  <option value="huggingface">Hugging Face (Inferencia)</option>
+                )}
+                {!esPrivado && <option value="openrouter">OpenRouter</option>}
               </select>
             </label>
             <label className="flex flex-col gap-1">
@@ -437,17 +465,22 @@ export default function AsistentePanel({
               </span>
               {usarInputLibre ? (
                 <input
-                  value={modelo}
-                  onChange={(e) => setModelo(e.target.value)}
-                  disabled={pensando}
+                  value={modeloUI}
+                  onChange={(e) => setModeloUI(e.target.value)}
+                  disabled={modeloBloqueado}
                   placeholder="ej. org/modelo"
                   className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface placeholder:text-on-surface-variant disabled:opacity-50"
                 />
               ) : (
                 <select
-                  value={modelo}
-                  onChange={(e) => setModelo(e.target.value)}
-                  disabled={pensando}
+                  value={modeloUI}
+                  onChange={(e) => setModeloUI(e.target.value)}
+                  disabled={modeloBloqueado}
+                  title={
+                    modeloBloqueado && !esPrivado
+                      ? "Solo el creador puede cambiar el modelo"
+                      : undefined
+                  }
                   className="rounded border border-outline/60 bg-surface-container-low px-2 py-1.5 font-code-sm text-code-sm text-on-surface disabled:opacity-50"
                 >
                   <option value="">Elegir modelo...</option>
@@ -469,7 +502,7 @@ export default function AsistentePanel({
             </span>
             <button
               onClick={() => void probarConformidad()}
-              disabled={probandoConformidad || pensando || modelo.trim() === ""}
+              disabled={probandoConformidad || pensando || modeloUI.trim() === ""}
               className="flex items-center gap-1 rounded border border-outline/60 px-2 py-1 font-badge-label text-badge-label uppercase tracking-wider text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-50"
               title="Envía una petición fija con las herramientas reales para ver si el proveedor puede editar"
             >
@@ -481,6 +514,17 @@ export default function AsistentePanel({
               {probandoConformidad ? "Probando…" : "Probar"}
             </button>
           </div>
+          {!esPrivado && !esCreador && (
+            <p className="flex items-center gap-1.5 font-code-sm text-code-sm text-on-surface-variant">
+              <Lock className="h-3 w-3 shrink-0" />
+              Solo el creador cambia el modelo del proyecto; usás el que él eligió.
+            </p>
+          )}
+          {avisoConfig && (
+            <p className="font-code-sm text-code-sm text-amber-lock" role="status">
+              {avisoConfig}
+            </p>
+          )}
           {avisoFallback && (
             <p className="font-code-sm text-code-sm text-amber-lock" role="status">
               {avisoFallback}
@@ -656,7 +700,7 @@ export default function AsistentePanel({
                 onClick={handleSend}
                 disabled={!puedeEnviar}
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-on-primary transition-opacity hover:bg-primary/90 disabled:opacity-40"
-                title={modelo.trim() === "" ? "Consultar con el modelo del tramo" : "Consultar"}
+                title={modeloPrivado.trim() === "" ? "Consultar con el modelo del tramo" : "Consultar"}
               >
                 {pensando ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -665,9 +709,9 @@ export default function AsistentePanel({
                 )}
               </button>
             </div>
-            {modelo.trim() === "" && (
+            {modeloPrivado.trim() === "" && (
               <p className="mt-1 font-code-sm text-code-sm text-on-surface-variant">
-                Sin modelo elegido se usa el modelo por defecto del tramo.
+                Sin modelo elegido se usa el modelo por defecto de HF Space.
               </p>
             )}
           </div>
