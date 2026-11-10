@@ -81,6 +81,21 @@ function safeParseArgs(args: string | undefined | Record<string, unknown>): unkn
   }
 }
 
+/** Serializa con claves ordenadas para comparar argumentos sin importar su orden. */
+function serializarEstable(valor: unknown): string {
+  if (valor === null || typeof valor !== "object") return JSON.stringify(valor) ?? "null";
+  if (Array.isArray(valor)) return `[${valor.map(serializarEstable).join(",")}]`;
+  const objeto = valor as Record<string, unknown>;
+  const claves = Object.keys(objeto).sort();
+  return `{${claves
+    .map((clave) => `${JSON.stringify(clave)}:${serializarEstable(objeto[clave])}`)
+    .join(",")}}`;
+}
+
+function clavePropuesta(toolName: string, args: unknown): string {
+  return `${toolName}:${serializarEstable(args)}`;
+}
+
 function toolResultJson(ok: boolean, data: Record<string, unknown> | undefined, message: string | undefined, error?: string): string {
   if (ok) {
     return JSON.stringify({ ok: true, ...(data ?? {}), ...(message ? { message } : {}) });
@@ -188,6 +203,8 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult
   ];
   const trace: TurnTrace[] = [];
   const pendingProposals: PendingProposal[] = [];
+  // Evita que un modelo débil repita la misma propuesta en cada ronda.
+  const propuestasVistas = new Set<string>();
   const hitl = params.hitl ?? editable;
   let lastContent = "";
   let bloquesEliminados = 0;
@@ -317,24 +334,39 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentResult
       // HITL: las tools de solo lectura (getState, validate) se ejecutan siempre.
       if (hitl && !isReadOnlyTool(name)) {
         // HITL: no ejecuta, solo propone. Guarda para aprobación humana.
-        pendingProposals.push({
-          id: call.id,
-          toolName: name,
-          args: validation.value as unknown as Record<string, unknown>,
-          round,
-          turnoId: params.turnoId,
-          proveedor: proveedorUsado,
-          modelo: modeloUsado,
-          solicitadoPor: params.solicitadoPor,
-          proyectoId: params.proyectoId ?? null,
-        });
+        const clave = clavePropuesta(name, validation.value);
+        const duplicada = propuestasVistas.has(clave);
+        if (!duplicada) {
+          propuestasVistas.add(clave);
+          pendingProposals.push({
+            id: call.id,
+            toolName: name,
+            args: validation.value as unknown as Record<string, unknown>,
+            round,
+            turnoId: params.turnoId,
+            proveedor: proveedorUsado,
+            modelo: modeloUsado,
+            solicitadoPor: params.solicitadoPor,
+            proyectoId: params.proyectoId ?? null,
+          });
+        }
         trace.push({ round, toolName: name, ok: true });
         params.onTurn?.(trace[trace.length - 1]);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           name,
-          content: JSON.stringify({ ok: true, proposed: true, tool: name }),
+          content: JSON.stringify(
+            duplicada
+              ? {
+                  ok: true,
+                  proposed: true,
+                  duplicate: true,
+                  tool: name,
+                  nota: "Ya registrada; no la repitas.",
+                }
+              : { ok: true, proposed: true, tool: name },
+          ),
         });
         continue;
       }

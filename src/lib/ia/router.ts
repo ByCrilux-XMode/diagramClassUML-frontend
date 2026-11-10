@@ -3,6 +3,7 @@ import {
   IA_CADENA_EDICION,
   IA_CADENA_RESUMEN,
   IA_DEFAULT_MODEL,
+  IA_HF_SPACE_MODEL,
   OPENROUTER_DEFAULT_MODEL,
 } from "./config";
 import type { IAProvider } from "./types";
@@ -175,6 +176,10 @@ export function modeloDeTramo(tramo: TramoProveedor): string {
   if (explicito) return explicito;
   if (tramo.proveedor === "openrouter") {
     return OPENROUTER_DEFAULT_MODEL;
+  }
+  // `hf-space` usa el ID del Space propio; el adaptador lo resuelve a su URL.
+  if (tramo.proveedor === "hf-space") {
+    return IA_HF_SPACE_MODEL;
   }
   return IA_DEFAULT_MODEL;
 }
