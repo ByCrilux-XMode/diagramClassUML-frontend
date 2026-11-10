@@ -145,7 +145,7 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
     tool_choice: req.tools.length > 0 ? "auto" : undefined,
     stream: false,
     temperature: 0.2,
-    max_tokens: 2048,
+    max_tokens: req.maxTokens ?? 2048,
   };
 
   const errors: string[] = [];
@@ -171,6 +171,7 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
       const data = (await res.json()) as {
         model?: string;
         choices?: Array<{
+          finish_reason?: string;
           message?: {
             content?: string | null;
             tool_calls?: Array<{
@@ -195,6 +196,7 @@ export async function chat(req: IAChatRequestBody): Promise<IAChatResponse> {
         content: message?.content ?? "",
         toolCalls,
         model: data.model,
+        finishReason: data.choices?.[0]?.finish_reason,
         keyFallbacksUsed: i,
       };
     } catch (err: unknown) {

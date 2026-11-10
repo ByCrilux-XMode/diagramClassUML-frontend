@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import type { IAChatMessage, IAProvider, IAToolDef } from "@/lib/ia/types";
 import { getAdapter, isValidProvider } from "@/lib/ia/adapters";
 import { guardiaIA } from "@/lib/ia/guardia";
-import { IA_DEFAULT_MODEL, IA_HF_SPACE_MODEL, IA_OPENROUTER_MODEL, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
+import { IA_DEFAULT_MODEL, IA_HF_SPACE_MODEL, IA_OPENROUTER_MODEL, IA_VISION_MAX_TOKENS, OPENROUTER_DEFAULT_MODEL } from "@/lib/ia/config";
 
 /**
  * Modelo que se manda al proveedor. El navegador solo ve las claves
@@ -80,6 +80,9 @@ export async function POST(request: NextRequest) {
       messages: messages as IAChatMessage[],
       tools,
       httpReferer: new URL(request.url).origin,
+      // La visión devuelve un JSON grande (tablas + columnas + relaciones):
+      // con el tope del chat (2048) se truncaba y el parser devolvía null.
+      maxTokens: esVision ? IA_VISION_MAX_TOKENS : undefined,
     });
     return Response.json(result);
   } catch (err: unknown) {

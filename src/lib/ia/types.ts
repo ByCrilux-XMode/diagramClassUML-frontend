@@ -33,12 +33,16 @@ export interface IAChatRequestBody {
   tools: IAToolDef[];
   /** OpenRouter: origin real del request (HTTP-Referer). En Vercel debe ser el dominio del frontend, no el base del backend. */
   httpReferer?: string;
+  /** Tope de tokens de salida. La visión necesita más que el chat (ver IA_VISION_MAX_TOKENS). */
+  maxTokens?: number;
 }
 
 export interface IAChatResponse {
   content: string;
   toolCalls: IAToolCall[];
   model?: string;
+  /** Motivo por el que el modelo dejó de generar (`stop`, `length`, ...). */
+  finishReason?: string;
   /** OpenRouter: nº de fallbacks de key que hubo que probar antes de acertar. */
   keyFallbacksUsed?: number;
 }

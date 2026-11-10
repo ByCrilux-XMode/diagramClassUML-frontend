@@ -146,6 +146,14 @@ export const IA_VISION_HF_MODEL =
   process.env.IA_VISION_HF_MODEL?.trim() ||
   "Qwen/Qwen3-VL-30B-A3B-Instruct";
 /**
+ * Tope de tokens de salida de la ruta visión.
+ *
+ * Un diagrama con varias tablas y relaciones no cabe en los 2048 tokens del
+ * chat normal: el JSON se truncaba a mitad de objeto y `parseVisionJson`
+ * devolvía `null` ("La visión no devolvió un esquema válido").
+ */
+export const IA_VISION_MAX_TOKENS = Number(process.env.IA_VISION_MAX_TOKENS ?? "8192");
+/**
  * Provider de la ruta visión. Default: el mismo que IA_DEFAULT_PROVIDER
  * (un solo switch migra todo). Se puede independizar, ej. chat en HF
  * y visión siguiendo en Ollama local.

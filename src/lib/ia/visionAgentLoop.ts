@@ -33,6 +33,7 @@ import { VISION_SYSTEM_PROMPT, VISION_DEFAULT_MODEL } from "./visionSystemPrompt
 export { VISION_DEFAULT_MODEL };
 import { VISION_OUTPUT_SCHEMA, validateCrossReferences, normalizeVisionKeys } from "./visionSchema";
 import { visionSchemaToToolCalls } from "./visionSchemaToToolCalls";
+import { parseVisionJson } from "./visionParse";
 import { validateArgs, executeToolSync } from "@/lib/editorTools";
 
 export interface RunVisionParams {
@@ -51,23 +52,6 @@ export interface RunVisionResult {
   warnings: string[];
   appliedSkips: Array<{ kind: string; details: string }>;
   hitlRequired: boolean;
-}
-
-function parseVisionJson(raw: string): unknown {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed) return null;
-  try {
-    // La visión a veces envuelve en ```json ... ``` o deja texto antes/despues.
-    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
-    const body = fenced ? fenced[1].trim() : trimmed;
-    const start = body.indexOf("{");
-    const end = body.lastIndexOf("}");
-    const slice = start === -1 || end === -1 || end < start ? body : body.slice(start, end + 1);
-    return JSON.parse(slice) as unknown;
-  } catch {
-    // contenido vacio/invalido: safeParse(fallo) devuelve el error amigable
-    return null;
-  }
 }
 
 /**
@@ -98,6 +82,7 @@ export async function runVisionImport(params: RunVisionParams): Promise<RunVisio
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IA_CHAT_TIMEOUT_MS);
   let content = "";
+  let finishReason = "";
   try {
     const res = await fetch("/api/ia/chat", {
       method: "POST",
@@ -105,9 +90,14 @@ export async function runVisionImport(params: RunVisionParams): Promise<RunVisio
       body: JSON.stringify({ provider: params.provider, model, messages, tools: [], task: "vision" }),
       signal: controller.signal,
     });
-    const data = (await res.json().catch(() => ({}))) as { content?: string; error?: string };
+    const data = (await res.json().catch(() => ({}))) as {
+      content?: string;
+      error?: string;
+      finishReason?: string;
+    };
     if (!res.ok) throw new Error(data.error ?? `El proxy IA respondió HTTP ${res.status}.`);
     content = data.content ?? "";
+    finishReason = data.finishReason ?? "";
   } finally {
     clearTimeout(timer);
   }
@@ -120,8 +110,14 @@ export async function runVisionImport(params: RunVisionParams): Promise<RunVisio
     const detail = first
       ? `${first.path.join(".")}: ${first.message}`
       : "JSON no válido";
+    // Diagnóstico visible: sin esto no se distingue "respuesta vacía" de
+    // "JSON truncado/ inválido", que necesitan arreglos distintos.
+    const fragmento = content.replace(/\s+/g, " ").trim().slice(0, 200);
+    const pista = fragmento
+      ? ` Recibido: «${fragmento}${content.length > 200 ? "…" : ""}»${finishReason ? ` (finish_reason=${finishReason})` : ""}.`
+      : ` La respuesta del modelo vino vacía${finishReason ? ` (finish_reason=${finishReason})` : ""}.`;
     return {
-      finalContent: `La visión no devolvió un esquema válido (${detail}). Revisá que la foto tenga el diagrama bien iluminado y completo.`,
+      finalContent: `La visión no devolvió un esquema válido (${detail}).${pista} Revisá que la foto tenga el diagrama bien iluminado y completo.`,
       trace: [],
       warnings: [],
       appliedSkips: [],
